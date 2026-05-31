@@ -913,3 +913,299 @@ Expected: PR URL printed.
 **Placeholder scan:** No TBD/TODO/"handle edge cases" — every code step shows complete code with verified symbol names (`get_events_path`, `read_events_since`, `registry.resolve`, `session.get_jsonl_path`, `backend.send_text`, etc.).
 
 **Type consistency:** `find_pending_question` returns the dict consumed by `validate_answer_index`, `answer_worker_question`, and `wait_for_worker` (keys: `tool_use_id`, `question`, `header`, `multiSelect`, `options`, `num_questions`, `answerable`, `reason`). `WorkerEvent(ts, type, worker_id, data)` matches `events.py`. Session accessors used (`registry.resolve`, `session.get_jsonl_path`, `session.is_idle`, `session.session_id`, `session.terminal_session`, `app_ctx.terminal_backend`, `backend.send_text`) match the existing tools.
+
+---
+
+# REVISION (2026-05-31): hook-marker redesign — SUPERSEDES the JSONL approach
+
+**Why:** Live verification proved Claude Code does NOT write the `AskUserQuestion` tool-use
+to the worker JSONL until it is *answered* — so a JSONL scan can never see a *pending*
+question. The verified mechanism is a worker-side `PreToolUse` hook (fires while pending,
+delivers the full structured payload), with `PostToolUse` clearing it on answer. Detection
+reads a per-worker marker file. See the revised spec for evidence.
+
+Tasks 1–5 above were implemented on the JSONL premise and committed. The tasks below
+(R1–R5) rework them. `_build_pending_question` and `validate_answer_index` (pure helpers)
+and the `wait_for_worker` / `answer_worker_question` / event shapes are **kept**; only the
+detection *source* changes and hook injection is added.
+
+**Marker convention (shared by hook writer and reader):**
+`~/.maniple/pending/<marker_id>.json`, where `marker_id` is the worker's `session_id` (the
+same id the Stop hook uses and that the registry exposes as `session.session_id`). The hook
+command hardcodes the `~/.maniple/pending` literal (it cannot import maniple); the reader
+uses the same literal. Keep them in sync.
+
+## Task R1: Inject PreToolUse/PostToolUse hooks into workers
+
+**Files:**
+- Modify: `src/maniple_mcp/iterm_utils.py` (function `build_stop_hook_settings_file`)
+- Test: `tests/test_worker_hooks.py` (new)
+
+Both tmux and iTerm2 backends call `build_stop_hook_settings_file(marker_id)`, so editing it
+covers both.
+
+- [ ] **Step 1: Write the failing test** — create `tests/test_worker_hooks.py`:
+
+```python
+"""The worker settings file injects AskUserQuestion Pre/PostToolUse hooks."""
+
+import json
+from pathlib import Path
+
+from maniple_mcp.iterm_utils import build_stop_hook_settings_file
+
+
+def test_settings_file_has_stop_and_question_hooks():
+    marker = "abc123"
+    path = build_stop_hook_settings_file(marker)
+    settings = json.loads(Path(path).read_text())
+    hooks = settings["hooks"]
+
+    # Stop hook unchanged
+    assert hooks["Stop"][0]["hooks"][0]["command"] == f"echo [worker-done:{marker}]"
+
+    # PreToolUse writes the marker for AskUserQuestion
+    pre = hooks["PreToolUse"][0]
+    assert pre["matcher"] == "AskUserQuestion"
+    pre_cmd = pre["hooks"][0]["command"]
+    assert f"{marker}.json" in pre_cmd
+    assert "pending" in pre_cmd
+
+    # PostToolUse deletes the marker for AskUserQuestion
+    post = hooks["PostToolUse"][0]
+    assert post["matcher"] == "AskUserQuestion"
+    post_cmd = post["hooks"][0]["command"]
+    assert f"{marker}.json" in post_cmd
+```
+
+- [ ] **Step 2: Run it, expect FAIL** (`KeyError: 'PreToolUse'`):
+`cd /Users/paulparker/code/maniple && uv run pytest tests/test_worker_hooks.py -q`
+
+- [ ] **Step 3: Implement** — in `build_stop_hook_settings_file`, replace the `settings`
+dict with one that adds the two hooks. Keep the existing Stop hook line exactly. Insert:
+
+```python
+    pending_file = f"$HOME/.maniple/pending/{marker_id}.json"
+    # Self-contained stdlib python3; `|| true` keeps the hook best-effort so a
+    # write/delete failure never blocks or crashes the worker. The reader in
+    # session_state.py uses the SAME ~/.maniple/pending/<marker_id>.json path.
+    pre_cmd = (
+        "python3 -c \""
+        "import sys,pathlib; "
+        "d=pathlib.Path.home()/'.maniple'/'pending'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        f"(d/'{marker_id}.json').write_text(sys.stdin.read())"
+        "\" || true"
+    )
+    post_cmd = (
+        "python3 -c \""
+        "import pathlib; "
+        f"(pathlib.Path.home()/'.maniple'/'pending'/'{marker_id}.json').unlink(missing_ok=True)"
+        "\" || true"
+    )
+
+    settings = {
+        "hooks": {
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": f"echo [worker-done:{marker_id}]"
+                }]
+            }],
+            "PreToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": pre_cmd}],
+            }],
+            "PostToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": post_cmd}],
+            }],
+        }
+    }
+```
+
+(The `pending_file` local is illustrative; the commands embed the path directly. Remove the
+unused local if your linter complains.)
+
+- [ ] **Step 4: Run it, expect PASS**; also run `uv run pytest tests/ -q` (no regressions —
+the existing Stop-hook tests must still pass).
+
+- [ ] **Step 5: Commit** `src/maniple_mcp/iterm_utils.py tests/test_worker_hooks.py` with
+message `feat: inject AskUserQuestion Pre/PostToolUse marker hooks into workers`.
+
+## Task R2: Rewrite find_pending_question as a marker-file reader
+
+**Files:**
+- Modify: `src/maniple_mcp/session_state.py`
+- Modify: `tests/test_pending_question.py`
+
+- [ ] **Step 1: Rewrite the detector tests** — replace the 7 JSONL-fixture detector tests
+in `tests/test_pending_question.py` (the ones using `_ask`/`_answer`/`_write_jsonl`) with
+marker-file tests. KEEP the three `validate_answer_index` tests and the
+`test_worker_waiting_input_event_roundtrips` test. New tests:
+
+```python
+import json
+import maniple_mcp.session_state as ss
+from maniple_mcp.session_state import find_pending_question, validate_answer_index
+
+
+def _write_marker(tmp_path, monkeypatch, marker_id, payload):
+    monkeypatch.setattr(ss, "PENDING_DIR", tmp_path)
+    (tmp_path / f"{marker_id}.json").write_text(json.dumps(payload))
+
+
+def _payload(multi=False, questions=None):
+    qs = questions or [{
+        "question": "Which logging level should this project use?",
+        "header": "Log Level", "multiSelect": multi,
+        "options": [{"label": "INFO", "description": "x"}, {"label": "DEBUG", "description": "y"}],
+    }]
+    return {"tool_name": "AskUserQuestion", "tool_use_id": "toolu_1",
+            "tool_input": {"questions": qs}}
+
+
+def test_detects_pending_single_select(tmp_path, monkeypatch):
+    _write_marker(tmp_path, monkeypatch, "w1", _payload())
+    q = find_pending_question("w1")
+    assert q is not None and q["tool_use_id"] == "toolu_1"
+    assert [o["label"] for o in q["options"]] == ["INFO", "DEBUG"]
+    assert q["answerable"] is True and q["reason"] is None
+
+
+def test_no_marker_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "PENDING_DIR", tmp_path)
+    assert find_pending_question("nope") is None
+
+
+def test_multiselect_not_answerable(tmp_path, monkeypatch):
+    _write_marker(tmp_path, monkeypatch, "w1", _payload(multi=True))
+    q = find_pending_question("w1")
+    assert q["answerable"] is False and q["reason"] == "multiSelect"
+
+
+def test_multi_question_not_answerable(tmp_path, monkeypatch):
+    two = [
+        {"question": "Q1?", "header": "H1", "multiSelect": False, "options": [{"label": "A", "description": ""}]},
+        {"question": "Q2?", "header": "H2", "multiSelect": False, "options": [{"label": "B", "description": ""}]},
+    ]
+    _write_marker(tmp_path, monkeypatch, "w1", _payload(questions=two))
+    q = find_pending_question("w1")
+    assert q["answerable"] is False and q["reason"] == "multi_question" and q["num_questions"] == 2
+
+
+def test_malformed_marker_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "PENDING_DIR", tmp_path)
+    (tmp_path / "w1.json").write_text("{not json")
+    assert find_pending_question("w1") is None
+```
+
+- [ ] **Step 2: Run, expect FAIL** (`AttributeError: ... PENDING_DIR` and signature
+mismatch): `uv run pytest tests/test_pending_question.py -q`
+
+- [ ] **Step 3: Replace `find_pending_question`** in `session_state.py`. Add near the top of
+the detection section:
+
+```python
+# Worker pending-question markers, written by the injected PreToolUse hook.
+# MUST match the path hardcoded in build_stop_hook_settings_file()'s hook command.
+PENDING_DIR = Path.home() / ".maniple" / "pending"
+```
+
+Replace the body of `find_pending_question` (delete the JSONL scan) with:
+
+```python
+def find_pending_question(marker_id: str) -> Optional[dict]:
+    """Return the pending AskUserQuestion for a worker, or None.
+
+    Reads ~/.maniple/pending/<marker_id>.json, written by the worker's injected
+    PreToolUse hook while it is blocked on the prompt (and deleted by PostToolUse
+    on answer). marker_id is the worker's session_id.
+    """
+    marker = PENDING_DIR / f"{marker_id}.json"
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, FileNotFoundError, ValueError):
+        return None
+    return _build_pending_question(
+        payload.get("tool_use_id", ""),
+        payload.get("tool_input", {}) or {},
+    )
+```
+
+Keep `_build_pending_question` and `validate_answer_index` exactly as they are. Remove now-
+unused JSONL-scan helpers only if they were specific to the old `find_pending_question`
+(don't remove shared parsing used elsewhere).
+
+- [ ] **Step 4: Run, expect PASS**: `uv run pytest tests/test_pending_question.py -q`.
+
+- [ ] **Step 5: Commit** `src/maniple_mcp/session_state.py tests/test_pending_question.py`
+with `refactor: find_pending_question reads hook marker file, not JSONL`.
+
+## Task R3: Update tool call-sites to pass session_id
+
+**Files:** `src/maniple_mcp/tools/answer_worker_question.py`, `src/maniple_mcp/tools/wait_for_worker.py`
+
+- [ ] **Step 1:** In `answer_worker_question.py`, the `jsonl_path` lookup is no longer needed
+for detection. Replace `question = find_pending_question(jsonl_path)` with
+`question = find_pending_question(session.session_id)`. KEEP the `get_jsonl_path()` /
+`no_jsonl_file` guard ONLY if other logic needs it; otherwise remove that guard block (the
+marker, not the JSONL, is the source now). The send path (`backend.send_text`) is unchanged.
+
+- [ ] **Step 2:** In `wait_for_worker.py`, replace
+`question = find_pending_question(jsonl_path)` with
+`question = find_pending_question(session.session_id)`. The `is_idle()` path still uses the
+JSONL/stop-hook and is unchanged; the timeout stuck-classification (jsonl mtime) is
+unchanged. Remove the now-unused `jsonl_path` local in the pending-check branch only if it is
+not used by the idle/stuck logic (it is still used by stuck classification — keep it there).
+
+- [ ] **Step 3:** Run `uv run pytest tests/ -q` (no regressions). Commit both files with
+`refactor: detection tools read pending marker by session_id`.
+
+## Task R4: Clean up markers on worker close
+
+**Files:** `src/maniple_mcp/tools/close_workers.py` (+ a small unit test if practical)
+
+- [ ] **Step 1:** When a worker is closed, best-effort delete its marker. Add, for each
+closed worker's `session_id`:
+
+```python
+from ..session_state import PENDING_DIR
+# ... inside the close loop, after the session is torn down:
+(PENDING_DIR / f"{session.session_id}.json").unlink(missing_ok=True)
+```
+
+Match the file's existing structure/error handling (wrap in try/except if the surrounding
+code does). Run `uv run pytest tests/ -q`; commit with
+`feat: delete pending-question marker when a worker is closed`.
+
+## Task R5: Rewrite the e2e test for the hook-marker mechanism
+
+**Files:** `tests/test_blocked_question_e2e.py`
+
+- [ ] **Step 1:** Rewrite the test so it: (a) builds a settings file containing the same
+PreToolUse/PostToolUse hooks pointed at a TEMP pending dir (use
+`build_stop_hook_settings_file` against a temp `~/.maniple`? No — instead construct a minimal
+settings JSON inline in the test pointing the hook command at a `tmp_path` pending dir, then
+launch `claude --settings <file>`); (b) launches a real worker in tmux with that settings
+file; (c) waits for the menu; (d) asserts the marker file appears in the temp pending dir
+WHILE pending and that `find_pending_question` (with `PENDING_DIR` monkeypatched to the temp
+dir) parses INFO/DEBUG; (e) answers by sending the option number; (f) asserts the worker
+proceeds AND the marker file is deleted by PostToolUse. Keep the `e2e` marker and the
+tmux/claude skipif guards.
+
+- [ ] **Step 2:** Confirm deselected from default runs: `uv run pytest tests/ -q -m "not e2e"`.
+
+- [ ] **Step 3:** Controller runs the real e2e once (`-m e2e`) and confirms green.
+
+- [ ] **Step 4:** Commit `tests/test_blocked_question_e2e.py` with
+`test: e2e blocked-question via hook marker (detect + answer + clear)`.
+
+## Revised self-review
+- Detection source corrected (marker file) — R1+R2. ✓
+- Hook injection added for both backends (shared builder) — R1. ✓
+- Tool shapes / event / answer mechanism unchanged — R3. ✓
+- Stale-marker cleanup — R4. ✓
+- e2e proves the real pending-while-blocked path — R5. ✓
+- Kept helpers: `_build_pending_question`, `validate_answer_index`, `wait_for_worker`,
+  `answer_worker_question` send path, `worker_waiting_input` event. ✓
