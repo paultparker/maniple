@@ -1495,6 +1495,11 @@ def is_session_stopped(
 # AskUserQuestion pending-question detection
 # =============================================================================
 
+# Worker pending-question markers, written by the injected PreToolUse hook.
+# MUST match the path hardcoded in build_stop_hook_settings_file()'s hook command.
+PENDING_DIR = Path.home() / ".maniple" / "pending"
+
+
 def _build_pending_question(tool_use_id: str, tool_input: dict) -> dict:
     """Shape a parsed AskUserQuestion input into a pending-question dict.
 
@@ -1533,49 +1538,22 @@ def _build_pending_question(tool_use_id: str, tool_input: dict) -> dict:
     }
 
 
-def find_pending_question(jsonl_path: Path) -> Optional[dict]:
-    """Return the latest unanswered AskUserQuestion in a worker's JSONL, or None.
+def find_pending_question(marker_id: str) -> Optional[dict]:
+    """Return the pending AskUserQuestion for a worker, or None.
 
-    A question is pending if an AskUserQuestion tool_use exists with no later
-    tool_result carrying its tool_use_id. Returns the parsed question/options
-    (see _build_pending_question) or None if the worker is not blocked on one.
+    Reads ~/.maniple/pending/<marker_id>.json, written by the worker's injected
+    PreToolUse hook while it is blocked on the prompt (and deleted by PostToolUse
+    on answer). marker_id is the worker's session_id.
     """
-    pending_inputs: dict[str, dict] = {}
-    order: list[str] = []
-    answered: set[str] = set()
-
+    marker = PENDING_DIR / f"{marker_id}.json"
     try:
-        with open(jsonl_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                content = entry.get("message", {}).get("content")
-                if not isinstance(content, list):
-                    continue
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "tool_use" and item.get("name") == "AskUserQuestion":
-                        tid = item.get("id")
-                        if tid:
-                            pending_inputs[tid] = item.get("input", {}) or {}
-                            order.append(tid)
-                    elif item.get("type") == "tool_result":
-                        tid = item.get("tool_use_id")
-                        if tid:
-                            answered.add(tid)
-    except (OSError, FileNotFoundError):
+        payload = json.loads(marker.read_text())
+    except (OSError, FileNotFoundError, ValueError):
         return None
-
-    for tid in reversed(order):
-        if tid not in answered:
-            return _build_pending_question(tid, pending_inputs[tid])
-    return None
+    return _build_pending_question(
+        payload.get("tool_use_id", ""),
+        payload.get("tool_input", {}) or {},
+    )
 
 
 def validate_answer_index(question: dict, option_index: int) -> Optional[str]:
