@@ -1489,3 +1489,100 @@ def is_session_stopped(
 
     # Stop hook fired and no messages after it - session is stopped
     return True
+
+
+# =============================================================================
+# AskUserQuestion pending-question detection
+# =============================================================================
+
+def _build_pending_question(tool_use_id: str, tool_input: dict) -> dict:
+    """Shape a parsed AskUserQuestion input into a pending-question dict.
+
+    answerable is True only for a single, single-select question (the only
+    shape v1 can answer with one option number). multiSelect / multi-question
+    are surfaced but flagged for escalation.
+    """
+    questions = tool_input.get("questions") or []
+    num = len(questions)
+    first = questions[0] if questions else {}
+    options = [
+        {"label": o.get("label", ""), "description": o.get("description", "")}
+        for o in (first.get("options") or [])
+        if isinstance(o, dict)
+    ]
+    multi = bool(first.get("multiSelect", False))
+
+    answerable = True
+    reason: str | None = None
+    if num != 1:
+        answerable, reason = False, "multi_question"
+    elif multi:
+        answerable, reason = False, "multiSelect"
+    elif not options:
+        answerable, reason = False, "no_options"
+
+    return {
+        "tool_use_id": tool_use_id,
+        "question": first.get("question", ""),
+        "header": first.get("header", ""),
+        "multiSelect": multi,
+        "options": options,
+        "num_questions": num,
+        "answerable": answerable,
+        "reason": reason,
+    }
+
+
+def find_pending_question(jsonl_path: Path) -> Optional[dict]:
+    """Return the latest unanswered AskUserQuestion in a worker's JSONL, or None.
+
+    A question is pending if an AskUserQuestion tool_use exists with no later
+    tool_result carrying its tool_use_id. Returns the parsed question/options
+    (see _build_pending_question) or None if the worker is not blocked on one.
+    """
+    pending_inputs: dict[str, dict] = {}
+    order: list[str] = []
+    answered: set[str] = set()
+
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                content = entry.get("message", {}).get("content")
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "tool_use" and item.get("name") == "AskUserQuestion":
+                        tid = item.get("id")
+                        if tid:
+                            pending_inputs[tid] = item.get("input", {}) or {}
+                            order.append(tid)
+                    elif item.get("type") == "tool_result":
+                        tid = item.get("tool_use_id")
+                        if tid:
+                            answered.add(tid)
+    except (OSError, FileNotFoundError):
+        return None
+
+    for tid in reversed(order):
+        if tid not in answered:
+            return _build_pending_question(tid, pending_inputs[tid])
+    return None
+
+
+def validate_answer_index(question: dict, option_index: int) -> Optional[str]:
+    """Return None if option_index (1-based) is a valid answer, else an error string."""
+    if not question.get("answerable", False):
+        return f"not answerable ({question.get('reason')})"
+    n = len(question.get("options") or [])
+    if not isinstance(option_index, int) or option_index < 1 or option_index > n:
+        return f"option_index {option_index} out of range 1..{n}"
+    return None
