@@ -55,6 +55,9 @@ packages = ["src/maniple", "src/maniple_mcp", "src/claude_team", "src/claude_tea
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests that spawn real claude sessions (opt-in)",
+]
 
 [dependency-groups]
 dev = [
