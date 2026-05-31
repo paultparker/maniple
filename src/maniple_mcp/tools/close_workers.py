@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 from ..iterm_utils import CODEX_PRE_ENTER_DELAY
 from ..registry import SessionRegistry, SessionStatus
+from ..session_state import PENDING_DIR
 from ..worktree import WorktreeError, remove_worktree
 from ..utils import error_response, HINTS
 
@@ -110,6 +111,12 @@ async def _close_single_worker(
         # Remove from registry
         registry.remove(session_id)
 
+        # Best-effort: delete any pending-question marker left by the worker hook.
+        try:
+            (PENDING_DIR / f"{session.session_id}.json").unlink(missing_ok=True)
+        except OSError:
+            pass
+
         return {
             "success": True,
             "worktree_cleaned": worktree_cleaned,
@@ -119,6 +126,11 @@ async def _close_single_worker(
         logger.error(f"Failed to close session {session_id}: {e}")
         # Still try to remove from registry
         registry.remove(session_id)
+        # Best-effort: delete any pending-question marker.
+        try:
+            (PENDING_DIR / f"{session.session_id}.json").unlink(missing_ok=True)
+        except OSError:
+            pass
         return {
             "success": True,
             "warning": f"Session removed but cleanup may be incomplete: {e}",
