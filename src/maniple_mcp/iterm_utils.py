@@ -609,6 +609,24 @@ def build_stop_hook_settings_file(marker_id: str) -> str:
     settings_dir = Path.home() / ".claude" / "claude-team-settings"
     settings_dir.mkdir(parents=True, exist_ok=True)
 
+    # Self-contained stdlib python3; `|| true` keeps the hook best-effort so a
+    # write/delete failure never blocks or crashes the worker. The reader in
+    # session_state.py uses the SAME ~/.maniple/pending/<marker_id>.json path.
+    pre_cmd = (
+        "python3 -c \""
+        "import sys,pathlib; "
+        "d=pathlib.Path.home()/'.maniple'/'pending'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        f"(d/'{marker_id}.json').write_text(sys.stdin.read())"
+        "\" || true"
+    )
+    post_cmd = (
+        "python3 -c \""
+        "import pathlib; "
+        f"(pathlib.Path.home()/'.maniple'/'pending'/'{marker_id}.json').unlink(missing_ok=True)"
+        "\" || true"
+    )
+
     settings = {
         "hooks": {
             "Stop": [{
@@ -616,7 +634,15 @@ def build_stop_hook_settings_file(marker_id: str) -> str:
                     "type": "command",
                     "command": f"echo [worker-done:{marker_id}]"
                 }]
-            }]
+            }],
+            "PreToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": pre_cmd}],
+            }],
+            "PostToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": post_cmd}],
+            }],
         }
     }
 
