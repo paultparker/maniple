@@ -29,14 +29,33 @@ worker-waiting-on-a-question as *busy*, and the master cannot use `wait_idle_wor
 scraping panes via `tmux capture-pane` (with temp-file workarounds), which was slow
 (~3 min, high-effort Opus) and clumsy.
 
-### Key enabling finding
+### Key finding (REVISED 2026-05-31 after live verification)
 
-When a worker calls `AskUserQuestion`, the tool-use is written to its JSONL transcript as
-**structured data** — `questions[].{question, header, multiSelect, options[].{label,
-description}}` — in the **same order the worker displayed them** (verified: sending the
-literal option number selected the correct displayed option even when the worker reordered
-options). maniple already parses worker JSONL. So detection needs **zero screen-scraping**:
-scan the JSONL for an `AskUserQuestion` tool-use with no answer yet.
+An initial draft of this spec assumed the `AskUserQuestion` tool-use could be read from the
+worker's **JSONL** while pending. **This was verified false.** A live probe showed that while
+a worker is blocked on the menu, its JSONL contains **no `assistant` entry at all** — Claude
+Code does not flush the assistant message (with the tool-use) to disk until the question is
+**answered**. By the time the tool-use is on disk, its `tool_result` is too. So a JSONL scan
+can never see a *pending* question. (The earlier "verification" was on already-answered
+transcripts; the smoke-test master detected blocks by pane-scraping, which hid the gap.)
+
+**The mechanism that works:** a worker-side **`PreToolUse` hook matching `AskUserQuestion`**
+fires the instant the tool is invoked — *while the worker is blocked, before any answer* —
+and receives the **complete structured payload** on stdin (verified live):
+
+```json
+{ "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
+  "tool_use_id": "toolu_...", "session_id": "...", "transcript_path": "...",
+  "tool_input": { "questions": [ { "question": "...", "header": "...", "multiSelect": false,
+     "options": [ {"label":"INFO","description":"..."}, {"label":"DEBUG","description":"..."} ] } ] } }
+```
+
+Detection is therefore **hook-driven**, not JSONL-driven: maniple injects `PreToolUse`
+(write a "pending" marker file) and `PostToolUse` (delete it on answer) hooks into each
+worker — the **same `--settings` file mechanism it already uses to inject the Stop hook**.
+Still zero screen-scraping; structured options; deterministic; available the moment the
+worker blocks. Answering is unchanged and verified: send the option **number** (a hotkey
+that selects+submits) via the tmux `send_text` primitive.
 
 ## Requirements
 
@@ -46,37 +65,57 @@ scan the JSONL for an `AskUserQuestion` tool-use with no answer yet.
    surface.
 3. Let the master answer a single-select question by option number.
 4. Keep escalation **policy in the master's prompt** (LLM judgment) for v1 — not hardwired.
-5. Reuse maniple's existing machinery (JSONL reader, event log, registry, tmux `send_text`).
+5. Reuse maniple's existing machinery (worker `--settings` hook injection, event log,
+   registry, `send_text`).
 6. Implement **in-tree** in `~/code/maniple`; aim to upstream as a PR.
 
 ## Architecture
 
-Add a JSONL-based pending-question detector to maniple's session-state layer, and surface
-it through maniple's existing event stream plus a small new MCP tool surface. The master
-makes one wait call after dispatching work and learns "done vs asking vs hung"; it applies
-its prompt policy and either answers or escalates to the human.
+maniple injects `PreToolUse`/`PostToolUse` hooks for `AskUserQuestion` into each worker
+(via the existing worker `--settings` file). The `PreToolUse` hook writes the structured
+payload to a per-worker marker file; the `PostToolUse` hook deletes it on answer. A marker-
+file detector surfaces this through maniple's event stream and a small new MCP tool surface.
+The master makes one wait call after dispatching work and learns "done vs asking vs hung";
+it applies its prompt policy and either answers or escalates to the human.
 
 ```
-worker calls AskUserQuestion
-        │  (structured tool-use written to worker JSONL)
+worker invokes AskUserQuestion
+        │  PreToolUse hook (fires while pending) writes payload →
+        │      ~/.maniple/pending/<marker_id>.json     (marker_id = worker session_id)
         ▼
-session_state.pending_question()   ← new detector (JSONL scan, no screen-scrape)
+session_state.find_pending_question(session_id)   ← reads the marker file (no JSONL, no screen-scrape)
         │
         ├── wait_for_worker(...) returns state = waiting_input + parsed question/options
-        ├── examine_worker(...) includes pending_question
         └── poll_worker_changes(...) reports worker_waiting_input events
         ▼
 master applies CLAUDE.md policy (LLM judgment)
         ├── routine    → answer_worker_question(worker, option_index) → send_text("k")
         └── ambiguous  → escalate to human → (human decides) → answer_worker_question(...)
+        ▼
+worker answers → PostToolUse hook deletes the marker file
 ```
 
 ## Components (all in `~/code/maniple`, mirroring existing patterns)
 
+### 0. Worker hook injection — `src/maniple_mcp/iterm_utils.py`
+Extend `build_stop_hook_settings_file(marker_id)` (used by **both** the tmux and iTerm2
+backends via `start_agent_in_session`) so the generated `--settings` file also contains, in
+addition to the existing `Stop` hook:
+- `PreToolUse` with `matcher: "AskUserQuestion"` → a self-contained `python3 -c` command
+  (stdlib only) that reads the hook payload from stdin and writes it to
+  `~/.maniple/pending/<marker_id>.json` (creating the dir).
+- `PostToolUse` with `matcher: "AskUserQuestion"` → a `python3 -c` command that deletes
+  `~/.maniple/pending/<marker_id>.json` (missing_ok).
+
+`marker_id` is the worker's `session_id` (the same id the Stop hook uses and that the
+registry exposes as `session.session_id`), so detection can find the marker without parsing
+the payload. Commands embed `marker_id` literally at file-build time.
+
 ### 1. Detection — `src/maniple_mcp/session_state.py`
-Add `pending_question()` to `SessionState`. Scans parsed messages for the **latest
-`AskUserQuestion` tool-use that has no following answer** (no subsequent message carrying a
-`tool_result` for that `tool_use_id`). Returns `None` or:
+Add `find_pending_question(marker_id: str) -> Optional[dict]`. Reads
+`~/.maniple/pending/<marker_id>.json`; if absent/unreadable → `None`. Otherwise shapes the
+payload's `tool_use_id` + `tool_input` via `_build_pending_question(...)`, returning `None`
+or:
 
 ```
 {
@@ -84,12 +123,21 @@ Add `pending_question()` to `SessionState`. Scans parsed messages for the **late
   "question": str,
   "header": str,
   "multiSelect": bool,
-  "options": [ { "label": str, "description": str }, ... ]   # display order
+  "options": [ { "label": str, "description": str }, ... ],   # display order
+  "num_questions": int,
+  "answerable": bool,    # True only for a single single-select question
+  "reason": str | None,  # "multiSelect" | "multi_question" | "no_options" when not answerable
 }
 ```
 
-This is the only substantively new logic. If `questions[]` contains more than one question,
-return a marker indicating multi-question (handled by escalation in v1).
+The pure helpers `_build_pending_question(tool_use_id, tool_input)` and
+`validate_answer_index(question, option_index)` are unchanged (they already shape/validate
+the same `questions/options` structure — which now arrives from the hook payload instead of
+the JSONL).
+
+The substantively new logic is the hook injection (§0) and this marker reader. If
+`questions[]` contains more than one question, `answerable` is `False` with reason
+`"multi_question"` (handled by escalation in v1).
 
 ### 2. Master-facing tools — `src/maniple_mcp/tools/`
 Follow the existing `register_tools(mcp)` pattern (one file per tool).
@@ -102,10 +150,11 @@ Follow the existing `register_tools(mcp)` pattern (one file per tool).
   this tool reconciles the two states in one place.)
 
 - **`answer_worker_question(session_id, option_index)`** — `option_index` is 1-based into
-  the real options array. Re-reads the worker's `pending_question()` and **aborts if the
-  `tool_use_id` changed** (race guard) or if it is not answerable as a single number
-  (multiSelect / multi-question / out-of-range). On success, sends the number via the
-  existing tmux `send_text` primitive (number is a hotkey; no Enter).
+  the real options array. Re-reads the worker's pending question via
+  `find_pending_question(session.session_id)` and **aborts if the `tool_use_id` changed**
+  (race guard) or if it is not answerable as a single number (multiSelect / multi-question /
+  out-of-range). On success, sends the number via the existing `send_text` primitive (number
+  is a hotkey; no Enter).
 
 ### 3. Event-stream integration — `src/maniple/events.py` (+ poller)
 Add `worker_waiting_input` to `EventType` and emit a `WorkerEvent` carrying the parsed
@@ -124,26 +173,38 @@ calls; no background daemon is required for v1.)
   aborts if the pending `tool_use_id` no longer matches.
 - The worker UI appends "Type something" and "Chat about this" as entries `N+1, N+2`; the
   answer helper permits only `1..N` (the real options).
-- **non-tmux / missing pane** → return a clear error.
+- **stale marker** (worker killed while a question was pending → `PostToolUse` never ran) →
+  the marker file lingers. v1: `close_workers` deletes `~/.maniple/pending/<marker_id>.json`
+  for closed workers, and spawning a worker clears any pre-existing marker for its id.
+- **non-tmux / missing pane** (answer path) → return a clear error.
 
 ## Error handling
 
 - All new tools return structured error dicts (matching maniple's existing
   `get_session_or_error` convention) rather than raising, so the master can react.
 - `answer_worker_question` validates before sending; never blindly types into a pane.
-- Detection tolerates malformed/partial JSONL lines (skip-and-continue, as existing parsing
-  does).
+- The marker reader tolerates a missing/partial/malformed marker file (→ `None`).
+- The injected hook commands are stdlib-only `python3 -c` snippets that must never crash the
+  worker: failures to write/delete the marker are swallowed (best-effort), so a hook problem
+  degrades detection but never the worker itself.
 
 ## Testing
 
-- **Unit:** synthetic JSONL fixtures — pending single-select, answered, multiSelect,
-  multi-question, and no-question — asserting `pending_question()` parses/identifies each
-  correctly. Use maniple's existing `tests/` fixture pattern.
-- **Integration:** reuse the smoke-test harness — spawn a real worker that asks an
-  `AskUserQuestion`; assert `wait_for_worker` returns `waiting_input` with correctly parsed
-  options, `answer_worker_question` lands, and the worker proceeds with the chosen option.
-- **Regression:** existing stop-hook idle detection and `wait_idle_workers` behavior
-  unchanged.
+- **Unit (detection):** write a marker JSON into a temp dir (monkeypatch the pending-dir
+  path) and assert `find_pending_question(marker_id)` parses single-select / multiSelect /
+  multi-question / no-options correctly, and returns `None` when the marker is absent. Plus
+  the existing `_build_pending_question` / `validate_answer_index` tests.
+- **Unit (hook injection):** call `build_stop_hook_settings_file(marker_id)`, load the
+  written JSON, and assert it contains the `Stop` hook (unchanged) **and** `PreToolUse` /
+  `PostToolUse` entries with `matcher == "AskUserQuestion"` whose commands reference
+  `<marker_id>.json` under the pending dir.
+- **Integration (e2e, opt-in):** build a settings file with the Pre/PostToolUse hooks
+  pointed at a temp pending dir, launch a real `claude --settings <file>` worker in tmux,
+  wait for the menu; assert the marker file appears **while pending** and
+  `find_pending_question` parses INFO/DEBUG; answer by sending the option number; assert the
+  worker proceeds and the marker is deleted by `PostToolUse`.
+- **Regression:** existing stop-hook idle detection, `wait_idle_workers`, and the contents
+  of the Stop hook in the settings file remain unchanged.
 
 ## Scope
 
@@ -163,5 +224,5 @@ is surfaced and escalated to the human. Policy stays in the master's prompt.
 ## Out of scope
 
 - Changing maniple's stop-hook idle detection (kept as-is; `wait_for_worker` composes with it).
-- Any pane/ANSI screen-scraping (the JSONL path makes it unnecessary).
+- Any pane/ANSI screen-scraping (the hook-marker path makes it unnecessary).
 - The master/escalation policy itself (lives in the master session's `CLAUDE.md`, not in maniple).
