@@ -133,3 +133,18 @@ def test_validate_answer_index_out_of_range():
 def test_validate_answer_index_not_answerable():
     q = {"answerable": False, "reason": "multiSelect", "options": [{"label": "A"}]}
     assert "multiSelect" in validate_answer_index(q, 1)
+
+
+def test_worker_waiting_input_event_roundtrips(tmp_path, monkeypatch):
+    import maniple.events as events
+    # Both append_event and read_events_since resolve the log via get_events_path().
+    monkeypatch.setattr(events, "get_events_path", lambda: tmp_path / "events.jsonl")
+    ev = events.WorkerEvent(
+        ts="2026-05-31T18:00:00Z",
+        type="worker_waiting_input",
+        worker_id="abc123",
+        data={"question": "Which DB?", "tool_use_id": "toolu_9"},
+    )
+    events.append_event(ev)
+    loaded = events.read_events_since()
+    assert any(e.type == "worker_waiting_input" and e.worker_id == "abc123" for e in loaded)
