@@ -88,7 +88,7 @@ def register_tools(mcp: FastMCP) -> None:
                 jsonl_path = session.get_jsonl_path()
 
                 if jsonl_path:
-                    question = find_pending_question(jsonl_path)
+                    question = find_pending_question(session.session_id)
                     if question is not None:
                         events.append_event(events.WorkerEvent(
                             ts=_now_iso(),

@@ -53,13 +53,7 @@ def register_tools(mcp: FastMCP) -> None:
                 f"Session not found: {session_id}", hint=HINTS["session_not_found"]
             )
 
-        jsonl_path = session.get_jsonl_path()
-        if not jsonl_path:
-            return error_response(
-                f"No JSONL file for: {session_id}", hint=HINTS["no_jsonl_file"]
-            )
-
-        question = find_pending_question(jsonl_path)
+        question = find_pending_question(session.session_id)
         if question is None:
             return error_response(
                 f"{session_id} is not blocked on a question right now."
