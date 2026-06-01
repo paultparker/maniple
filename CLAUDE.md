@@ -12,7 +12,7 @@ Driving a team of workers? The core loop:
 2. **`message_workers`** — send tasks/follow-ups. `wait_mode: "all"` fans out then waits for all; `"any"` for pipelines.
 3. **`wait_idle_workers`** / **`wait_for_worker`** — block until workers finish, or until one blocks on input (`waiting_input` | `stuck`).
 4. **`answer_worker_question`** — resolve a worker's pending `AskUserQuestion` (single-select and multiSelect). **`list_blocked_workers`** surfaces who's waiting.
-5. **`read_worker_logs`** / **`examine_worker`** — pull a worker's output/context to coordinate the next step. **`poll_worker_changes`** for lifecycle events.
+5. **`list_workers`** / **`read_worker_logs`** / **`examine_worker`** — see your team and pull a worker's output/context to coordinate the next step. **`poll_worker_changes`** for lifecycle events.
 6. **`close_workers`** — tear down (worktree branches are preserved for later merge/PR).
 
 Worker-spawn assignment, wait modes, and worked examples (parallel worktrees, issue-tracker workflows, coordinated handoffs) live in the **README's "Usage Patterns"** section and the `spawn_workers` field reference. Spawn defaults (worktree, agent type, layout, backend) come from `~/.maniple/config.json` — see `config.py`.
