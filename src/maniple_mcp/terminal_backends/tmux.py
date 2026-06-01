@@ -468,6 +468,7 @@ class TmuxBackend(TerminalBackend):
         stop_hook_marker_id: str | None = None,
         output_capture_path: str | None = None,
         plugin_dir: str | None = None,
+        trust_project_mcp: bool = True,
     ) -> None:
         """Start a CLI agent in an existing tmux pane."""
         # Ensure the shell is responsive before we send the launch command.
@@ -485,7 +486,9 @@ class TmuxBackend(TerminalBackend):
         if stop_hook_marker_id and cli.supports_settings_file():
             from ..iterm_utils import build_stop_hook_settings_file
 
-            settings_file = build_stop_hook_settings_file(stop_hook_marker_id)
+            settings_file = build_stop_hook_settings_file(
+                stop_hook_marker_id, trust_project_mcp=trust_project_mcp
+            )
 
         # Build the CLI command (with env vars and settings) for this agent.
         agent_cmd = cli.build_full_command(
