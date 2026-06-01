@@ -2,6 +2,21 @@
 
 An MCP server that enables a "manager" Claude Code session to spawn and orchestrate multiple "worker" Claude Code (or Codex) sessions via a terminal backend (tmux or iTerm2).
 
+> **Two audiences for this file:** if you're a *manager session driving workers*, start with the Orchestrating Workers quickstart just below. If you're *developing this repo*, the rest (Running Tests, Project Structure, Key Modules, Implementation Details) is your code map.
+
+## Orchestrating Workers (master quickstart)
+
+Driving a team of workers? The core loop:
+
+1. **`spawn_workers`** — create 1–4 workers. Worktrees are **on by default** (each worker gets its own branch + working dir). Assign work via `issue_id` (issue-tracker workflow) and/or `prompt` (custom task); omit both to spawn idle.
+2. **`message_workers`** — send tasks/follow-ups. `wait_mode: "all"` fans out then waits for all; `"any"` for pipelines.
+3. **`wait_idle_workers`** / **`wait_for_worker`** — block until workers finish, or until one blocks on input (`waiting_input` | `stuck`).
+4. **`answer_worker_question`** — resolve a worker's pending `AskUserQuestion` (single-select and multiSelect). **`list_blocked_workers`** surfaces who's waiting.
+5. **`read_worker_logs`** / **`examine_worker`** — pull a worker's output/context to coordinate the next step. **`poll_worker_changes`** for lifecycle events.
+6. **`close_workers`** — tear down (worktree branches are preserved for later merge/PR).
+
+Worker-spawn assignment, wait modes, and worked examples (parallel worktrees, issue-tracker workflows, coordinated handoffs) live in the **README's "Usage Patterns"** section and the `spawn_workers` field reference. Spawn defaults (worktree, agent type, layout, backend) come from `~/.maniple/config.json` — see `config.py`.
+
 ## ⚠️ IMPORTANT: Running Tests
 
 **Always use `uv run pytest` to run tests.** Do NOT use `pytest` directly.
@@ -111,8 +126,10 @@ make sync                  # Sync dependencies
 |--------|---------|
 | `server.py` | Entry point; registers all MCP tools from `tools/` directory |
 | `registry.py` | Tracks workers, states: SPAWNING → READY → BUSY → CLOSED. `resolve()` accepts internal ID, terminal ID, or name |
+| `config.py` | Config schema + load/merge (`~/.maniple/config.json`); governs spawn defaults (`use_worktree`, `agent_type`, `layout`, backend) |
 | `session_state.py` | Parses Claude's JSONL files at `~/.claude/projects/{slug}/{session}.jsonl` |
 | `terminal_backends/` | Terminal control (`send_text`, `send_prompt`, window/pane creation) for tmux + iTerm2 |
+| `cli_backends/` | Agent CLI switch — `claude.py` vs `codex.py` worker invocation (Claude Code vs Codex) |
 | `iterm_utils.py` | Low-level iTerm2 Python API wrappers (used by the iTerm backend) |
 | `idle_detection.py` | Stop hook completion detection via JSONL markers |
 | `names.py` | Themed name sets (Marx Brothers, LOTR, etc.) for worker identification |
@@ -145,6 +162,7 @@ Where `{project-slug}` = project path with `/` → `-` (e.g., `/Users/josh/code`
 Workers are spawned with a stop hook that fires when Claude finishes responding. The hook writes a marker to the JSONL file that `idle_detection.py` watches for. This is the primary completion detection mechanism.
 
 ### Layout Options
+Panes/windows apply to both backends (tmux panes/windows and iTerm2 split panes):
 - `single`: 1 pane, full window (main)
 - `vertical`: 2 panes side by side (left, right)
 - `horizontal`: 2 panes stacked (top, bottom)
