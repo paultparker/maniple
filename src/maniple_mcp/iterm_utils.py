@@ -628,6 +628,11 @@ def build_stop_hook_settings_file(marker_id: str) -> str:
     )
 
     settings = {
+        # Auto-approve project .mcp.json servers so the "New MCP server found"
+        # trust prompt never blocks worker startup. Without this, the prompt
+        # stalls the agent-ready detector, which reports a spurious launch
+        # failure even though the worker is alive and waiting at the dialog.
+        "enableAllProjectMcpServers": True,
         "hooks": {
             "Stop": [{
                 "hooks": [{

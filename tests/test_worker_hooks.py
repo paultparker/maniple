@@ -27,3 +27,11 @@ def test_settings_file_has_stop_and_question_hooks():
     assert post["matcher"] == "AskUserQuestion"
     post_cmd = post["hooks"][0]["command"]
     assert f"{marker}.json" in post_cmd
+
+
+def test_settings_file_auto_trusts_project_mcp_servers():
+    """Workers auto-approve project .mcp.json servers so the trust prompt
+    never blocks startup (which the agent-ready detector counts as a failure)."""
+    path = build_stop_hook_settings_file("xyz789")
+    settings = json.loads(Path(path).read_text())
+    assert settings["enableAllProjectMcpServers"] is True
