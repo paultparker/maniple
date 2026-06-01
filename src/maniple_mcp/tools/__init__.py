@@ -14,6 +14,7 @@ from . import check_idle_workers
 from . import close_workers
 from . import discover_workers
 from . import examine_worker
+from . import list_blocked_workers
 from . import list_workers
 from . import list_worktrees
 from . import message_workers
@@ -41,6 +42,7 @@ def register_all_tools(mcp: FastMCP, ensure_connection) -> None:
     check_idle_workers.register_tools(mcp)
     close_workers.register_tools(mcp)
     examine_worker.register_tools(mcp)
+    list_blocked_workers.register_tools(mcp)
     list_workers.register_tools(mcp)
     list_worktrees.register_tools(mcp)
     message_workers.register_tools(mcp)

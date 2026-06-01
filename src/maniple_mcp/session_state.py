@@ -1556,6 +1556,23 @@ def find_pending_question(marker_id: str) -> Optional[dict]:
     )
 
 
+def find_blocked_workers(marker_ids) -> list[dict]:
+    """Return the subset of marker_ids that are currently blocked on a question.
+
+    Sweeps each marker_id (a worker session_id) and returns
+    ``[{"session_id": <id>, "question": <parsed question dict>}, ...]`` for those
+    with a pending AskUserQuestion marker. Used to detect blocked workers across
+    the whole registry rather than a caller-supplied watch set, so a worker that
+    re-blocks after going idle is not missed.
+    """
+    blocked: list[dict] = []
+    for marker_id in marker_ids:
+        question = find_pending_question(marker_id)
+        if question is not None:
+            blocked.append({"session_id": marker_id, "question": question})
+    return blocked
+
+
 def validate_answer_index(question: dict, option_index: int) -> Optional[str]:
     """Return None if option_index (1-based) is a valid answer, else an error string."""
     if not question.get("answerable", False):

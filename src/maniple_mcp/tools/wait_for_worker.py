@@ -29,7 +29,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     async def wait_for_worker(
         ctx: Context[ServerSession, "AppContext"],
-        session_ids: list[str],
+        session_ids: list[str] | None = None,
         timeout: float | None = 600.0,
         poll_interval: float | None = 2.0,
         stale_threshold_minutes: float | None = 10.0,
@@ -42,8 +42,13 @@ def register_tools(mcp: FastMCP) -> None:
         separately. A worker blocked on a question is NOT idle, so use this
         instead of wait_idle_workers when workers may ask questions.
 
+        Omit session_ids (or pass an empty list) to wait on ALL registered
+        workers. Prefer this when workers may re-block after going idle: a
+        fixed watch set misses a worker you already crossed off as done.
+
         Args:
-            session_ids: Workers to wait on. Accepts internal IDs, terminal IDs, or names.
+            session_ids: Workers to wait on. Accepts internal IDs, terminal IDs,
+                or names. Omit/empty to wait on every registered worker.
             timeout: Max seconds to wait (default 600).
             poll_interval: Seconds between checks (default 2).
             stale_threshold_minutes: On timeout, workers idle-on-disk longer than
@@ -66,8 +71,12 @@ def register_tools(mcp: FastMCP) -> None:
         registry = app_ctx.registry
 
         if not session_ids:
+            # Sweep-all: wait on every registered worker so a worker that
+            # re-blocks after going idle is not missed.
+            session_ids = [s.session_id for s in registry.list_all()]
+        if not session_ids:
             return error_response(
-                "session_ids is required and must contain at least one session ID",
+                "No workers to wait on (registry is empty)",
                 hint=HINTS["registry_empty"],
             )
 
