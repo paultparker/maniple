@@ -162,12 +162,14 @@ Where `{project-slug}` = project path with `/` → `-` (e.g., `/Users/josh/code`
 Workers are spawned with a stop hook that fires when Claude finishes responding. The hook writes a marker to the JSONL file that `idle_detection.py` watches for. This is the primary completion detection mechanism.
 
 ### Layout Options
-Panes/windows apply to both backends (tmux panes/windows and iTerm2 split panes):
+These pane layouts apply to the **iTerm2 backend only**. The **tmux backend ignores `layout`** and creates one new window per worker in a per-project tmux session (no pane packing / no auto slot-reuse).
 - `single`: 1 pane, full window (main)
 - `vertical`: 2 panes side by side (left, right)
 - `horizontal`: 2 panes stacked (top, bottom)
 - `quad`: 4 panes in 2x2 grid (top_left, top_right, bottom_left, bottom_right)
 - `triple_vertical`: 3 panes side by side (left, middle, right)
+
+Note: the 1–4 workers-per-`spawn_workers`-call cap is enforced for **both** backends (input validation), but on tmux that's an artificial per-call limit, not a window constraint — call `spawn_workers` again to add more windows to the same session.
 
 ## Running & Testing
 
