@@ -84,6 +84,7 @@ class ClaudeCLI(AgentCLI):
         dangerously_skip_permissions: bool = False,
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
+        model: str | None = None,
     ) -> list[str]:
         """
         Build Claude CLI arguments.
@@ -92,6 +93,8 @@ class ClaudeCLI(AgentCLI):
             dangerously_skip_permissions: Add --dangerously-skip-permissions
             settings_file: Path to settings JSON for Stop hook injection
             plugin_dir: Path(s) to plugin directory for --plugin-dir (single string or list)
+            model: Optional model name to pass as --model <value>.
+                Omitted entirely when None — do not pass an empty value.
 
         Returns:
             List of CLI arguments
@@ -100,7 +103,7 @@ class ClaudeCLI(AgentCLI):
 
         if dangerously_skip_permissions:
             args.append("--dangerously-skip-permissions")
-        
+
         if plugin_dir:
             # Support both single string and list of strings
             plugin_dirs = [plugin_dir] if isinstance(plugin_dir, str) else plugin_dir
@@ -114,6 +117,13 @@ class ClaudeCLI(AgentCLI):
         if settings_file and self._is_default_command():
             args.append("--settings")
             args.append(settings_file)
+
+        # Append --model as an additional arg to the existing command.
+        # MUST NOT inject model via commands.claude or MANIPLE_COMMAND — doing so
+        # would disable the Stop-hook --settings injection (see _is_default_command).
+        if model:
+            args.append("--model")
+            args.append(model)
 
         return args
 

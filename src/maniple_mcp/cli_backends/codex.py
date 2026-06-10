@@ -88,6 +88,7 @@ class CodexCLI(AgentCLI):
         dangerously_skip_permissions: bool = False,
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
+        model: str | None = None,
     ) -> list[str]:
         """
         Build Codex CLI arguments for interactive mode.
@@ -96,6 +97,7 @@ class CodexCLI(AgentCLI):
             dangerously_skip_permissions: Maps to --dangerously-bypass-approvals-and-sandbox for Codex
             settings_file: Ignored - Codex doesn't support settings injection
             plugin_dir: Ignored - Codex doesn't support plugin directories
+            model: Ignored - Codex model selection is handled separately
 
         Returns:
             List of CLI arguments for interactive mode
@@ -108,6 +110,8 @@ class CodexCLI(AgentCLI):
 
         # Note: settings_file is ignored - Codex doesn't support this
         # Idle detection uses session file polling instead
+
+        # Note: model is ignored - Codex model selection is handled separately
 
         return args
 

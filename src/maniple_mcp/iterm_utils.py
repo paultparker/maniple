@@ -675,6 +675,7 @@ async def start_agent_in_session(
     output_capture_path: Optional[str] = None,
     plugin_dir: Optional[str | list[str]] = None,
     trust_project_mcp: bool = True,
+    model: Optional[str] = None,
 ) -> None:
     """
     Start an agent CLI in an existing iTerm2 session.
@@ -699,6 +700,7 @@ async def start_agent_in_session(
         trust_project_mcp: If True (default), auto-approve the project's
             .mcp.json servers so the trust prompt doesn't block startup. Set
             False when pointing a worker at an untrusted checkout.
+        model: Optional model name to pass as --model <value> (Claude only)
 
     Raises:
         RuntimeError: If shell not ready or agent fails to start within timeout
@@ -723,6 +725,7 @@ async def start_agent_in_session(
         dangerously_skip_permissions=dangerously_skip_permissions,
         settings_file=settings_file,
         plugin_dir=plugin_dir,
+        model=model,
         env_vars=env,
     )
 

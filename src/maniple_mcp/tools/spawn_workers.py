@@ -52,6 +52,7 @@ class WorkerConfig(TypedDict, total=False):
     use_worktree: bool  # Optional: Create isolated worktree (default True)
     worktree: WorktreeConfig  # Optional: Worktree settings (branch/base)
     plugin_dir: str | list[str]  # Optional: Path(s) to plugin directory for --plugin-dir
+    model: str  # Optional: Claude model to use (passed as --model <value>). Overrides defaults.model.
 
 
 def register_tools(mcp: FastMCP, ensure_connection) -> None:
@@ -695,6 +696,8 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 if trust_project_mcp is None:
                     trust_project_mcp = True
                 plugin_dir = worker_config.get("plugin_dir")
+                # Resolve model: per-worker > defaults.model > None (omit --model entirely)
+                model = worker_config.get("model") or getattr(defaults, "model", None)
                 await backend.start_agent_in_session(
                     handle=session,
                     cli=cli,
@@ -704,6 +707,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     stop_hook_marker_id=stop_hook_marker_id,
                     plugin_dir=plugin_dir,
                     trust_project_mcp=trust_project_mcp,
+                    model=model,
                 )
 
             await asyncio.gather(*[start_agent_for_worker(i) for i in range(worker_count)])

@@ -46,6 +46,7 @@ class DefaultsConfig:
     skip_permissions: bool = False
     use_worktree: bool = True
     layout: LayoutMode = "auto"
+    model: str | None = None
 
 
 @dataclass
@@ -206,7 +207,7 @@ def _parse_defaults(value: object) -> DefaultsConfig:
     data = _ensure_dict(value, "defaults")
     _validate_keys(
         data,
-        {"agent_type", "skip_permissions", "use_worktree", "layout"},
+        {"agent_type", "skip_permissions", "use_worktree", "layout", "model"},
         "defaults",
     )
     return DefaultsConfig(
@@ -232,6 +233,7 @@ def _parse_defaults(value: object) -> DefaultsConfig:
             "defaults.layout",
             DefaultsConfig.layout,
         ),
+        model=_optional_str(data.get("model"), "defaults.model"),
     )
 
 
