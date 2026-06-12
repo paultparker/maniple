@@ -4,7 +4,12 @@ Error response helpers for Claude Team MCP tools.
 Provides standardized error formatting and common hints for recovery.
 """
 
-from ..registry import SessionRegistry, ManagedSession
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..registry import SessionRegistry, ManagedSession
 
 
 def error_response(

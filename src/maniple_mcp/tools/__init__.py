@@ -8,11 +8,13 @@ from mcp.server.fastmcp import FastMCP
 
 from . import adopt_worker
 from . import annotate_worker
+from . import answer_worker_question
 from . import issue_tracker_help
 from . import check_idle_workers
 from . import close_workers
 from . import discover_workers
 from . import examine_worker
+from . import list_blocked_workers
 from . import list_workers
 from . import list_worktrees
 from . import message_workers
@@ -20,6 +22,7 @@ from . import poll_worker_changes
 from . import prune_recovered_workers
 from . import read_worker_logs
 from . import spawn_workers
+from . import wait_for_worker
 from . import wait_idle_workers
 from . import worker_events
 
@@ -34,16 +37,19 @@ def register_all_tools(mcp: FastMCP, ensure_connection) -> None:
     """
     # Tools that don't need ensure_connection
     annotate_worker.register_tools(mcp)
+    answer_worker_question.register_tools(mcp)
     issue_tracker_help.register_tools(mcp)
     check_idle_workers.register_tools(mcp)
     close_workers.register_tools(mcp)
     examine_worker.register_tools(mcp)
+    list_blocked_workers.register_tools(mcp)
     list_workers.register_tools(mcp)
     list_worktrees.register_tools(mcp)
     message_workers.register_tools(mcp)
     poll_worker_changes.register_tools(mcp)
     prune_recovered_workers.register_tools(mcp)
     read_worker_logs.register_tools(mcp)
+    wait_for_worker.register_tools(mcp)
     wait_idle_workers.register_tools(mcp)
     worker_events.register_tools(mcp)
 

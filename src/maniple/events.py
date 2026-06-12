@@ -31,6 +31,7 @@ EventType = Literal[
     "worker_started",
     "worker_idle",
     "worker_active",
+    "worker_waiting_input",
     "worker_closed",
 ]
 

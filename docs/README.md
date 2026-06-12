@@ -20,4 +20,6 @@ See the [Quick Reference](./task-delivery-quick-reference.md) for examples.
 
 ## Other Documentation
 
+- **[Field Learnings](./field-learnings.md)** - Operational gotchas from driving real multi-worker runs (the `skip_permissions` bypass gate, the 4-worker cap, unregistered-orphan recovery, worktree/merge lifecycle, monitoring patterns).
+
 *(Add additional documentation sections here as the project grows)*

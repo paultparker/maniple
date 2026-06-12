@@ -583,7 +583,7 @@ async def wait_for_agent_ready(
 # =============================================================================
 
 
-def build_stop_hook_settings_file(marker_id: str) -> str:
+def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True) -> str:
     """
     Build a settings file for Stop hook injection.
 
@@ -609,16 +609,52 @@ def build_stop_hook_settings_file(marker_id: str) -> str:
     settings_dir = Path.home() / ".claude" / "claude-team-settings"
     settings_dir.mkdir(parents=True, exist_ok=True)
 
-    settings = {
+    # Self-contained stdlib python3; `|| true` keeps the hook best-effort so a
+    # write/delete failure never blocks or crashes the worker. The reader in
+    # session_state.py uses the SAME ~/.maniple/pending/<marker_id>.json path.
+    pre_cmd = (
+        "python3 -c \""
+        "import sys,pathlib; "
+        "d=pathlib.Path.home()/'.maniple'/'pending'; "
+        "d.mkdir(parents=True, exist_ok=True); "
+        f"(d/'{marker_id}.json').write_text(sys.stdin.read())"
+        "\" || true"
+    )
+    post_cmd = (
+        "python3 -c \""
+        "import pathlib; "
+        f"(pathlib.Path.home()/'.maniple'/'pending'/'{marker_id}.json').unlink(missing_ok=True)"
+        "\" || true"
+    )
+
+    settings: dict = {
         "hooks": {
             "Stop": [{
                 "hooks": [{
                     "type": "command",
                     "command": f"echo [worker-done:{marker_id}]"
                 }]
-            }]
+            }],
+            "PreToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": pre_cmd}],
+            }],
+            "PostToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{"type": "command", "command": post_cmd}],
+            }],
         }
     }
+
+    # Auto-approve the project's .mcp.json servers so the "New MCP server found"
+    # trust prompt never blocks worker startup. Without this, the prompt stalls
+    # the agent-ready detector, which reports a spurious launch failure even
+    # though the worker is alive and waiting at the dialog. Gated on
+    # trust_project_mcp so a worker pointed at an untrusted checkout keeps the
+    # normal trust prompt instead of silently launching whatever MCP servers
+    # that repo declares.
+    if trust_project_mcp:
+        settings["enableAllProjectMcpServers"] = True
 
     # Use marker_id as filename for deterministic, reusable files
     settings_file = settings_dir / f"worker-{marker_id}.json"
@@ -638,6 +674,7 @@ async def start_agent_in_session(
     stop_hook_marker_id: Optional[str] = None,
     output_capture_path: Optional[str] = None,
     plugin_dir: Optional[str | list[str]] = None,
+    trust_project_mcp: bool = True,
 ) -> None:
     """
     Start an agent CLI in an existing iTerm2 session.
@@ -659,6 +696,9 @@ async def start_agent_in_session(
         output_capture_path: If provided, capture agent's stdout/stderr to this file
             using tee. Useful for agents that output JSONL for idle detection.
         plugin_dir: Optional path(s) to plugin directory for --plugin-dir flag
+        trust_project_mcp: If True (default), auto-approve the project's
+            .mcp.json servers so the trust prompt doesn't block startup. Set
+            False when pointing a worker at an untrusted checkout.
 
     Raises:
         RuntimeError: If shell not ready or agent fails to start within timeout
@@ -674,7 +714,9 @@ async def start_agent_in_session(
     # Build settings file for Stop hook injection if supported
     settings_file = None
     if stop_hook_marker_id and cli.supports_settings_file():
-        settings_file = build_stop_hook_settings_file(stop_hook_marker_id)
+        settings_file = build_stop_hook_settings_file(
+            stop_hook_marker_id, trust_project_mcp=trust_project_mcp
+        )
 
     # Build the full command using the AgentCLI abstraction
     agent_cmd = cli.build_full_command(

@@ -1489,3 +1489,95 @@ def is_session_stopped(
 
     # Stop hook fired and no messages after it - session is stopped
     return True
+
+
+# =============================================================================
+# AskUserQuestion pending-question detection
+# =============================================================================
+
+# Worker pending-question markers, written by the injected PreToolUse hook.
+# MUST match the path hardcoded in build_stop_hook_settings_file()'s hook command.
+PENDING_DIR = Path.home() / ".maniple" / "pending"
+
+
+def _build_pending_question(tool_use_id: str, tool_input: dict) -> dict:
+    """Shape a parsed AskUserQuestion input into a pending-question dict.
+
+    answerable is True only for a single, single-select question (the only
+    shape v1 can answer with one option number). multiSelect / multi-question
+    are surfaced but flagged for escalation.
+    """
+    questions = tool_input.get("questions") or []
+    num = len(questions)
+    first = questions[0] if questions else {}
+    options = [
+        {"label": o.get("label", ""), "description": o.get("description", "")}
+        for o in (first.get("options") or [])
+        if isinstance(o, dict)
+    ]
+    multi = bool(first.get("multiSelect", False))
+
+    answerable = True
+    reason: str | None = None
+    if num != 1:
+        answerable, reason = False, "multi_question"
+    elif multi:
+        answerable, reason = False, "multiSelect"
+    elif not options:
+        answerable, reason = False, "no_options"
+
+    return {
+        "tool_use_id": tool_use_id,
+        "question": first.get("question", ""),
+        "header": first.get("header", ""),
+        "multiSelect": multi,
+        "options": options,
+        "num_questions": num,
+        "answerable": answerable,
+        "reason": reason,
+    }
+
+
+def find_pending_question(marker_id: str) -> Optional[dict]:
+    """Return the pending AskUserQuestion for a worker, or None.
+
+    Reads ~/.maniple/pending/<marker_id>.json, written by the worker's injected
+    PreToolUse hook while it is blocked on the prompt (and deleted by PostToolUse
+    on answer). marker_id is the worker's session_id.
+    """
+    marker = PENDING_DIR / f"{marker_id}.json"
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, FileNotFoundError, ValueError):
+        return None
+    return _build_pending_question(
+        payload.get("tool_use_id", ""),
+        payload.get("tool_input", {}) or {},
+    )
+
+
+def find_blocked_workers(marker_ids) -> list[dict]:
+    """Return the subset of marker_ids that are currently blocked on a question.
+
+    Sweeps each marker_id (a worker session_id) and returns
+    ``[{"session_id": <id>, "question": <parsed question dict>}, ...]`` for those
+    with a pending AskUserQuestion marker. Used to detect blocked workers across
+    the whole registry rather than a caller-supplied watch set, so a worker that
+    re-blocks after going idle is not missed.
+    """
+    blocked: list[dict] = []
+    for marker_id in marker_ids:
+        question = find_pending_question(marker_id)
+        if question is not None:
+            blocked.append({"session_id": marker_id, "question": question})
+    return blocked
+
+
+def validate_answer_index(question: dict, option_index: int) -> Optional[str]:
+    """Return None if option_index (1-based) is a valid answer, else an error string."""
+    if not question.get("answerable", False):
+        return f"not answerable ({question.get('reason')})"
+    n = len(question.get("options") or [])
+    if not isinstance(option_index, int) or option_index < 1 or option_index > n:
+        return f"option_index {option_index} out of range 1..{n}"
+    return None

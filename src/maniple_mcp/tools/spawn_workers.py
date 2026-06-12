@@ -48,6 +48,7 @@ class WorkerConfig(TypedDict, total=False):
     issue_id: str  # Optional: Issue ID - THIS IS the worker's assignment if provided
     prompt: str  # Optional: Custom instructions - THIS IS the worker's task if provided
     skip_permissions: bool  # Optional: Default False
+    trust_project_mcp: bool  # Optional: Auto-approve project .mcp.json servers (default True). Set False for untrusted checkouts.
     use_worktree: bool  # Optional: Create isolated worktree (default True)
     worktree: WorktreeConfig  # Optional: Worktree settings (branch/base)
     plugin_dir: str | list[str]  # Optional: Path(s) to plugin directory for --plugin-dir
@@ -154,6 +155,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             skip_permissions: Whether to start Claude with --dangerously-skip-permissions.
                 Default False. Without this, workers can only read local files and will
                 struggle with most commands (writes, shell, etc.).
+            trust_project_mcp: Whether to auto-approve the project's .mcp.json MCP
+                servers so the "New MCP server found" trust prompt doesn't stall
+                startup. Default True. Set False when pointing a worker at an
+                untrusted checkout, so the normal trust prompt is preserved instead
+                of silently launching whatever MCP servers that repo declares.
 
         **Worker Assignment (how workers know what to do):**
 
@@ -683,6 +689,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 skip_permissions = worker_config.get("skip_permissions")
                 if skip_permissions is None:
                     skip_permissions = defaults.skip_permissions
+                # Auto-trust project .mcp.json servers by default so the trust
+                # prompt doesn't stall startup; opt out per-worker for untrusted code.
+                trust_project_mcp = worker_config.get("trust_project_mcp")
+                if trust_project_mcp is None:
+                    trust_project_mcp = True
                 plugin_dir = worker_config.get("plugin_dir")
                 await backend.start_agent_in_session(
                     handle=session,
@@ -692,6 +703,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     env=env,
                     stop_hook_marker_id=stop_hook_marker_id,
                     plugin_dir=plugin_dir,
+                    trust_project_mcp=trust_project_mcp,
                 )
 
             await asyncio.gather(*[start_agent_for_worker(i) for i in range(worker_count)])
