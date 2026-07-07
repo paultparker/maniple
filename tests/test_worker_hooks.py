@@ -77,7 +77,7 @@ class TestContextPauseHookInjection:
         command = matches[0]["hooks"][0]["command"]
         assert "context_pause_hook.py" in command
         assert "0.75" in command
-        assert "200000" in command
+        assert "1000000" in command
 
     def test_context_pause_hook_writes_standalone_script(self):
         """The hook script file itself is written to the settings dir and

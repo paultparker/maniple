@@ -12,9 +12,14 @@ Behavior (see PLAN in the maniple context-pause feature spec):
 - Otherwise, scan the transcript JSONL for the LAST main-chain (non
   sidechain) assistant message with a `message.usage` object and compute
   used = input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
-- If used / window_tokens >= threshold, deny the tool call via PreToolUse
-  JSON output on stdout, with a reason instructing the worker to write a
-  handoff and end its turn.
+- The effective window is model-aware: if that same message's `model` id
+  contains "haiku" (case-insensitive), the window is capped at 200K tokens
+  (Haiku 4.5's real context window as of the 2026-07 model catalog);
+  otherwise the configured window_tokens is used as-is (1M by default,
+  matching current Opus/Sonnet/Fable models). See _effective_window().
+- If used / effective_window >= threshold, deny the tool call via
+  PreToolUse JSON output on stdout, with a reason instructing the worker to
+  write a handoff and end its turn.
 - Fail open (exit 0, no output) on ANY error -- a broken hook must never
   block a worker.
 """
@@ -55,9 +60,14 @@ _TAIL_READ_BYTES = 1_000_000
 
 
 def _scan_lines_for_usage(lines):
-    """Return usage tokens from the last non-sidechain assistant message
-    with a usage object among `lines`, or None if none is found."""
+    """Return (used, model) from the last non-sidechain assistant message
+    with a usage object among `lines`, or (None, None) if none is found.
+
+    `model` is the raw `message.model` string (or None if absent) from that
+    same entry -- used by the caller to special-case Haiku's smaller window.
+    """
     used = None
+    model = None
     for line in lines:
         line = line.strip()
         if not line:
@@ -82,12 +92,13 @@ def _scan_lines_for_usage(lines):
         cache_read = usage.get("cache_read_input_tokens") or 0
         cache_creation = usage.get("cache_creation_input_tokens") or 0
         used = input_tokens + cache_read + cache_creation
-    return used
+        model = message.get("model")
+    return used, model
 
 
 def _last_main_chain_usage(transcript_path):
-    """Return usage tokens (int) from the last non-sidechain assistant
-    message with a usage object in the transcript, or None if not found.
+    """Return (used, model) from the last non-sidechain assistant message
+    with a usage object in the transcript, or (None, None) if not found.
 
     Mirrors the tail-read pattern used elsewhere in maniple for large JSONL
     session files: seek to the last _TAIL_READ_BYTES of the file, discard
@@ -104,17 +115,38 @@ def _last_main_chain_usage(transcript_path):
         tail_bytes = f.read()
 
     tail_lines = tail_bytes.decode("utf-8", errors="replace").splitlines()
-    used = _scan_lines_for_usage(tail_lines)
+    used, model = _scan_lines_for_usage(tail_lines)
     if used is not None or not truncated:
         # Either found in the tail, or the tail read already covered the
         # whole file (nothing more to gain from a fallback scan).
-        return used
+        return used, model
 
     # Fallback: no usage entry in the tail (e.g. a short burst of tool-only
     # activity after the last usage-bearing assistant message pushed it out
     # of the tail window). Do a full scan so correctness never regresses.
     with open(transcript_path, "r") as f:
         return _scan_lines_for_usage(f)
+
+
+# Effective context window for Haiku models, which is smaller than the
+# config default (see _effective_window below).
+_HAIKU_WINDOW_TOKENS = 200_000
+
+
+def _effective_window(window_tokens, model):
+    """Return the context window to use for this transcript.
+
+    Model catalog as of 2026-07: Haiku 4.5 has a 200K-token context window;
+    every other current model (Opus 4.8/4.7/4.6, Sonnet 5, Sonnet 4.6,
+    Fable 5) defaults to 1M. Rather than maintain a full model->window map
+    (which would need updating for every future release), this only
+    special-cases Haiku by a case-insensitive substring match on the model
+    id and otherwise trusts the configured window_tokens -- config is the
+    override point for future models that don't fit this rule.
+    """
+    if model and "haiku" in model.lower():
+        return min(window_tokens, _HAIKU_WINDOW_TOKENS)
+    return window_tokens
 
 
 def main(argv):
@@ -140,14 +172,18 @@ def main(argv):
         return 0
 
     try:
-        used = _last_main_chain_usage(transcript_path)
+        used, model = _last_main_chain_usage(transcript_path)
     except (OSError, ValueError):
         return 0
 
-    if used is None or window_tokens <= 0:
+    if used is None:
         return 0
 
-    fraction = used / window_tokens
+    window = _effective_window(window_tokens, model)
+    if window <= 0:
+        return 0
+
+    fraction = used / window
     if fraction < threshold:
         return 0
 

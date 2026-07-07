@@ -57,7 +57,7 @@ class TestDefaultConfig:
         config = default_config()
         assert config.context_pause.enabled is True
         assert config.context_pause.threshold == 0.75
-        assert config.context_pause.window_tokens == 200000
+        assert config.context_pause.window_tokens == 1_000_000
 
     def test_default_events(self):
         """Default events config values."""
@@ -643,7 +643,7 @@ class TestContextPauseValidation:
         assert config.context_pause.enabled is False
         # Other fields keep their defaults.
         assert config.context_pause.threshold == 0.75
-        assert config.context_pause.window_tokens == 200000
+        assert config.context_pause.window_tokens == 1_000_000
 
     def test_enabled_not_bool(self, tmp_path: Path):
         """Non-boolean enabled raises ConfigError."""
@@ -903,7 +903,7 @@ class TestDataclasses:
         config = ContextPauseConfig()
         assert config.enabled is True
         assert config.threshold == 0.75
-        assert config.window_tokens == 200000
+        assert config.window_tokens == 1_000_000
 
     def test_claude_team_config_defaults(self):
         """ClaudeTeamConfig has correct nested defaults."""

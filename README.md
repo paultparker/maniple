@@ -193,7 +193,7 @@ maniple config set <key> <value>  # Set and persist a value
   "context_pause": {
     "enabled": true,
     "threshold": 0.75,
-    "window_tokens": 200000
+    "window_tokens": 1000000
   }
 }
 ```
@@ -212,7 +212,7 @@ maniple config set <key> <value>  # Set and persist a value
 | `issue_tracker.override` | `"beads"` or `"pebbles"` | Force a specific issue tracker |
 | `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses `threshold` (default on) |
 | `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause (default `0.75` = 75%) |
-| `context_pause.window_tokens` | int, min `1000` | Context window size used to compute usage fraction (default `200000`) |
+| `context_pause.window_tokens` | int, min `1000` | Context window size, matching the worker's model (default `1000000` = 1M, current for Opus/Sonnet/Fable; the hook auto-caps this at 200K when it detects a Haiku model) |
 
 ### Context-Pause (Claude Code workers only)
 
@@ -220,9 +220,13 @@ Once a worker's context usage crosses `context_pause.threshold`, a PreToolUse
 hook (injected via `build_stop_hook_settings_file` in `iterm_utils.py`, shared
 by both terminal backends) blocks its tool calls except for `Write`, `Read`,
 and `TodoWrite` — enough to write a brief handoff file before ending its turn.
-The hook fails open on any error (missing/malformed transcript, missing
-usage data) so it can never break a worker. **Codex workers are excluded** —
-Codex has no hook mechanism, so this feature has no effect there.
+The window defaults to 1M tokens, matching current Opus/Sonnet/Fable models;
+the hook script detects a Haiku model id in the transcript (case-insensitive
+substring match, no full model map) and caps the effective window at Haiku
+4.5's real 200K there instead. The hook fails open on any error
+(missing/malformed transcript, missing usage data) so it can never break a
+worker. **Codex workers are excluded** — Codex has no hook mechanism, so
+this feature has no effect there.
 
 ## Environment Variables
 

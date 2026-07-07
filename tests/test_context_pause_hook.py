@@ -33,11 +33,16 @@ def _write_transcript(tmp_path: Path, entries: list[dict]) -> Path:
     return path
 
 
-def _assistant_entry(usage: dict, *, is_sidechain: bool = False) -> dict:
+def _assistant_entry(
+    usage: dict, *, is_sidechain: bool = False, model: str | None = None
+) -> dict:
+    message = {"role": "assistant", "usage": usage}
+    if model is not None:
+        message["model"] = model
     return {
         "type": "assistant",
         "isSidechain": is_sidechain,
-        "message": {"role": "assistant", "usage": usage},
+        "message": message,
     }
 
 
@@ -139,6 +144,63 @@ class TestThresholdEnforcement:
         result = _run_hook(hook_script, transcript, "Bash", threshold=0.75, window_tokens=200000)
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestModelAwareWindow:
+    """The effective window is capped at 200K for Haiku models. As of the
+    2026-07 model catalog, Haiku 4.5 has a 200K context window while all
+    other current models (Opus, Sonnet, Fable) default to 1M -- so a single
+    large config.window_tokens can serve as the default for most workers as
+    long as Haiku is special-cased down to its real, smaller window."""
+
+    def test_haiku_model_denied_at_200k_effective_window(self, hook_script, tmp_path):
+        # 160k tokens is under 75% of 1M (the configured window_tokens) but
+        # well over 75% of Haiku's real 200K window.
+        transcript = _write_transcript(
+            tmp_path,
+            [_assistant_entry({"input_tokens": 160000}, model="claude-haiku-4-5-20260101")],
+        )
+        result = _run_hook(
+            hook_script, transcript, "Bash", threshold=0.75, window_tokens=1_000_000
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_non_haiku_model_allowed_at_same_usage(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path,
+            [_assistant_entry({"input_tokens": 160000}, model="claude-opus-4-8-20260215")],
+        )
+        result = _run_hook(
+            hook_script, transcript, "Bash", threshold=0.75, window_tokens=1_000_000
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_haiku_match_is_case_insensitive(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path,
+            [_assistant_entry({"input_tokens": 160000}, model="Claude-Haiku-4.5")],
+        )
+        result = _run_hook(
+            hook_script, transcript, "Bash", threshold=0.75, window_tokens=1_000_000
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_missing_model_uses_configured_window_tokens_unmodified(
+        self, hook_script, tmp_path
+    ):
+        """No model field present -- no haiku detection is possible, so the
+        configured window_tokens is used as-is."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 160000})]
+        )
+        result = _run_hook(
+            hook_script, transcript, "Bash", threshold=0.75, window_tokens=1_000_000
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
 
 
 class TestSidechainHandling:

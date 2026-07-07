@@ -81,11 +81,19 @@ class ContextPauseConfig:
     context usage crosses `threshold`, so it can only write a handoff (via
     the hook's tool allowlist) before ending its turn. Codex workers have no
     hook mechanism and are unaffected.
+
+    `window_tokens` should match the worker's model's context window. As of
+    the 2026-07 model catalog, current Opus (4.8/4.7/4.6), Sonnet (5/4.6),
+    and Fable (5) models default to a 1M-token context window -- only Haiku
+    4.5 is smaller (200K). The default here is 1M; the hook script itself
+    (context_pause_hook.py) additionally caps the effective window at 200K
+    when it detects a Haiku model in the transcript, so this single config
+    value is correct for a mixed-model team without a full model map.
     """
 
     enabled: bool = True
     threshold: float = 0.75
-    window_tokens: int = 200000
+    window_tokens: int = 1_000_000
 
 
 @dataclass
