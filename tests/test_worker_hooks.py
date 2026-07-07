@@ -129,6 +129,66 @@ class TestContextPauseHookInjection:
         assert "0.6" in command
         assert "50000" in command
 
+    def test_context_pause_hook_quotes_script_path(self):
+        """The hook script path is quoted so paths containing spaces (e.g. a
+        user's home directory) are handled safely."""
+        path = build_stop_hook_settings_file("cp-quoted")
+        settings = json.loads(Path(path).read_text())
+        script_path = Path(path).parent / "context_pause_hook.py"
+
+        matches = _matcherless_pretooluse_entries(settings)
+        command = matches[0]["hooks"][0]["command"]
+        assert f'"{script_path}"' in command
+
+    def test_context_pause_hook_command_is_best_effort(self):
+        """Command ends with `|| true`, matching the neighboring AskUserQuestion
+        hooks' best-effort style -- a hook failure (e.g. missing python3) must
+        never surface as a user-visible warning."""
+        path = build_stop_hook_settings_file("cp-besteffort")
+        settings = json.loads(Path(path).read_text())
+
+        matches = _matcherless_pretooluse_entries(settings)
+        command = matches[0]["hooks"][0]["command"]
+        assert command.rstrip().endswith("|| true")
+
+    def test_context_pause_hook_script_not_rewritten_when_unchanged(self):
+        """The shared hook script is only ever regenerated with the same
+        content -- skip the write (and its torn-read race window) when the
+        file already exists with identical content, to avoid redundant I/O
+        on every spawn."""
+        import os
+
+        from maniple_mcp.context_pause_hook import HOOK_SCRIPT_FILENAME
+
+        # First call creates the script.
+        path = build_stop_hook_settings_file("cp-nowrite-1")
+        script_path = Path(path).parent / HOOK_SCRIPT_FILENAME
+        assert script_path.exists()
+
+        # Force an old mtime so a rewrite would be detectable.
+        old_time = 1_000_000_000.0
+        os.utime(script_path, (old_time, old_time))
+
+        # Second call (content unchanged) must not rewrite the file.
+        build_stop_hook_settings_file("cp-nowrite-2")
+        assert script_path.stat().st_mtime == old_time
+
+    def test_context_pause_hook_script_rewritten_when_stale(self):
+        """If the on-disk script content differs (e.g. an older generator
+        version, or corruption), it IS rewritten to match the current
+        generated source."""
+        from maniple_mcp.context_pause_hook import (
+            HOOK_SCRIPT_FILENAME,
+            render_hook_script,
+        )
+
+        path = build_stop_hook_settings_file("cp-stale-1")
+        script_path = Path(path).parent / HOOK_SCRIPT_FILENAME
+        script_path.write_text("# stale content from an older version\n")
+
+        build_stop_hook_settings_file("cp-stale-2")
+        assert script_path.read_text() == render_hook_script()
+
     def test_existing_hooks_unchanged_with_context_pause_enabled(self):
         """Stop and AskUserQuestion Pre/PostToolUse hooks are untouched when
         the context-pause hook is also injected."""

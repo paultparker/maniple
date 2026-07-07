@@ -41,6 +41,20 @@ def _assistant_entry(usage: dict, *, is_sidechain: bool = False) -> dict:
     }
 
 
+def _filler_entry(size: int) -> dict:
+    """A large, non-usage-bearing entry used to pad transcript size."""
+    return {
+        "type": "user",
+        "isSidechain": False,
+        "message": {"role": "user", "content": "x" * size},
+    }
+
+
+# Comfortably larger than the hook's ~1MB tail-read window, so padding with
+# these lines forces a real seek-past-the-front-of-the-file scenario.
+_TAIL_READ_BYTES = 1_000_000
+
+
 def _run_hook(
     hook_script: Path,
     transcript_path: object,
@@ -152,6 +166,47 @@ class TestSidechainHandling:
             ],
         )
         result = _run_hook(hook_script, transcript, "Bash", threshold=0.75, window_tokens=200000)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+
+class TestTailReadOptimization:
+    """The hook must scan only the tail of large transcripts for efficiency
+    (transcripts can reach tens of MB; a full parse on every tool call would
+    make cumulative cost quadratic over a session), falling back to a full
+    scan only when no usage entry is found in the tail."""
+
+    def test_usage_in_tail_of_large_file_still_found(self, hook_script, tmp_path):
+        """A large transcript (> tail window) with the real usage entry as
+        the last line -- within the tail -- still yields correct usage."""
+        entries = [_filler_entry(60_000) for _ in range(20)]  # ~1.2MB of padding
+        entries.append(_assistant_entry({"input_tokens": 190000}))
+        transcript = _write_transcript(tmp_path, entries)
+        assert transcript.stat().st_size > _TAIL_READ_BYTES
+
+        result = _run_hook(transcript_path=transcript, hook_script=hook_script, tool_name="Bash")
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_usage_outside_tail_falls_back_to_full_scan(self, hook_script, tmp_path):
+        """A large transcript where the only usage entry sits before the tail
+        window (buried under trailing padding with no usage) is still found
+        via the full-scan fallback."""
+        entries = [_assistant_entry({"input_tokens": 190000})]
+        entries.extend(_filler_entry(60_000) for _ in range(20))  # ~1.2MB after it
+        transcript = _write_transcript(tmp_path, entries)
+        assert transcript.stat().st_size > _TAIL_READ_BYTES
+
+        result = _run_hook(transcript_path=transcript, hook_script=hook_script, tool_name="Bash")
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_small_file_unaffected(self, hook_script, tmp_path):
+        """Small transcripts (well under the tail window) behave as before."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 1000})]
+        )
+        result = _run_hook(transcript_path=transcript, hook_script=hook_script, tool_name="Bash")
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 

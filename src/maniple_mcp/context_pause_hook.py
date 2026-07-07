@@ -40,41 +40,81 @@ Invoked as: python3 context_pause_hook.py <threshold> <window_tokens>
 Reads the Claude Code PreToolUse hook JSON payload from stdin.
 """
 import json
+import os
 import sys
 
 ALLOWLISTED_TOOLS = {"Write", "Read", "TodoWrite"}
 
+# Only the tail of the transcript is scanned first, for efficiency -- these
+# files can reach tens of MB, and a full parse on every single tool call
+# would make cumulative cost quadratic over a session. Usage-bearing
+# assistant lines are frequent, so ~1MB is generous; if no usage entry turns
+# up in the tail, _last_main_chain_usage() falls back to a full scan so
+# correctness is preserved for short/sparse transcripts.
+_TAIL_READ_BYTES = 1_000_000
+
+
+def _scan_lines_for_usage(lines):
+    """Return usage tokens from the last non-sidechain assistant message
+    with a usage object among `lines`, or None if none is found."""
+    used = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isSidechain"):
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") != "assistant":
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = usage.get("input_tokens") or 0
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        cache_creation = usage.get("cache_creation_input_tokens") or 0
+        used = input_tokens + cache_read + cache_creation
+    return used
+
 
 def _last_main_chain_usage(transcript_path):
     """Return usage tokens (int) from the last non-sidechain assistant
-    message with a usage object in the transcript, or None if not found."""
-    used = None
+    message with a usage object in the transcript, or None if not found.
+
+    Mirrors the tail-read pattern used elsewhere in maniple for large JSONL
+    session files: seek to the last _TAIL_READ_BYTES of the file, discard
+    the (possibly partial) first line, and scan only that tail.
+    """
+    file_size = os.path.getsize(transcript_path)
+    read_size = min(file_size, _TAIL_READ_BYTES)
+
+    with open(transcript_path, "rb") as f:
+        truncated = file_size > read_size
+        if truncated:
+            f.seek(file_size - read_size)
+            f.readline()  # Discard the partial first line from the seek.
+        tail_bytes = f.read()
+
+    tail_lines = tail_bytes.decode("utf-8", errors="replace").splitlines()
+    used = _scan_lines_for_usage(tail_lines)
+    if used is not None or not truncated:
+        # Either found in the tail, or the tail read already covered the
+        # whole file (nothing more to gain from a fallback scan).
+        return used
+
+    # Fallback: no usage entry in the tail (e.g. a short burst of tool-only
+    # activity after the last usage-bearing assistant message pushed it out
+    # of the tail window). Do a full scan so correctness never regresses.
     with open(transcript_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("isSidechain"):
-                continue
-            message = entry.get("message")
-            if not isinstance(message, dict):
-                continue
-            if message.get("role") != "assistant":
-                continue
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            input_tokens = usage.get("input_tokens") or 0
-            cache_read = usage.get("cache_read_input_tokens") or 0
-            cache_creation = usage.get("cache_creation_input_tokens") or 0
-            used = input_tokens + cache_read + cache_creation
-    return used
+        return _scan_lines_for_usage(f)
 
 
 def main(argv):

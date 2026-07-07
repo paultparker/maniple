@@ -10,6 +10,8 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from iterm2.app import App as ItermApp
     from iterm2.connection import Connection as ItermConnection
     from iterm2.profile import LocalWriteOnlyProfile as ItermLocalWriteOnlyProfile
@@ -583,6 +585,28 @@ async def wait_for_agent_ready(
 # =============================================================================
 
 
+def _write_if_changed(path: "Path", content: str) -> None:
+    """Write `content` to `path` only if it differs from what's already there.
+
+    The context-pause hook script is shared and its content never varies
+    for a given maniple version, so rewriting it on every spawn is redundant
+    I/O and opens a torn-read window (a worker could read the file mid-write).
+    When a write IS needed, it's done atomically via a temp file + os.replace
+    so a concurrent reader never sees a partial file.
+    """
+    import os
+
+    try:
+        if path.read_text() == content:
+            return
+    except OSError:
+        pass  # Missing, unreadable, etc. -- fall through to (re)write it.
+
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp_path.write_text(content)
+    os.replace(tmp_path, path)
+
+
 def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True) -> str:
     """
     Build a settings file for Stop hook injection.
@@ -667,11 +691,16 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         from .context_pause_hook import HOOK_SCRIPT_FILENAME, render_hook_script
 
         hook_script_path = settings_dir / HOOK_SCRIPT_FILENAME
-        hook_script_path.write_text(render_hook_script())
+        _write_if_changed(hook_script_path, render_hook_script())
 
+        # Quote the script path (it may contain spaces) and append `|| true`
+        # to match the neighboring hooks' best-effort style: only an exit
+        # code of 2 blocks a tool call, but any other non-zero exit (e.g.
+        # python3 missing) surfaces a user-visible hook warning, which
+        # `|| true` silences.
         context_pause_cmd = (
-            f"python3 {hook_script_path} "
-            f"{context_pause.threshold} {context_pause.window_tokens}"
+            f'python3 "{hook_script_path}" '
+            f"{context_pause.threshold} {context_pause.window_tokens} || true"
         )
         settings["hooks"]["PreToolUse"].append({
             "hooks": [{"type": "command", "command": context_pause_cmd}],
