@@ -245,6 +245,20 @@ class TestUsagePauseHookInjection:
         assert "/tmp/cc-statusline-input.json" in command
         assert "600" in command
 
+    def test_usage_pause_hook_command_includes_scope_and_override_dir(self):
+        """The command carries the worker's marker_id as `scope` and the
+        fixed override-ladder directory, so the hook can find/ignore this
+        worker's override file."""
+        marker = "up-scope-test"
+        path = build_stop_hook_settings_file(marker)
+        settings = json.loads(Path(path).read_text())
+
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        command = matches[0]
+        assert marker in command
+        assert ".maniple/usage_override" in command
+
     def test_usage_pause_hook_quotes_state_file_and_script_path(self):
         """Both the script path and state_file are shell-quoted (via
         shlex.quote) so values containing spaces or shell metacharacters

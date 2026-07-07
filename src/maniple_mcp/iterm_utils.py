@@ -733,16 +733,26 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         usage_hook_script_path = settings_dir / USAGE_PAUSE_SCRIPT_FILENAME
         _write_if_changed(usage_hook_script_path, render_usage_pause_hook_script())
 
-        # Shell-quote both the script path and state_file via shlex.quote.
+        # scope identifies this worker's override file (see
+        # tools/override_usage_pause.py); override_dir is fixed (not
+        # user-configurable), mirroring the ~/.maniple/pending/ marker dir
+        # used elsewhere in this function.
+        override_dir = Path.home() / ".maniple" / "usage_override"
+
+        # Shell-quote the script path and state_file via shlex.quote.
         # state_file is user-configurable (config only validates
         # non-emptiness), so naive '"' + value + '"' wrapping is unsafe --
         # a value containing '"' or shell metacharacters would break the
         # quoting and inject into this command. threshold/max_stale_seconds
         # are validated numerics, so plain interpolation is safe for those.
+        # marker_id becomes `scope` -- it's the worker's own session_id, so
+        # no shell metacharacters are expected, but quote it anyway since
+        # it can technically be caller-supplied.
         usage_pause_cmd = (
             f"python3 {shlex.quote(str(usage_hook_script_path))} "
             f"{usage_pause.threshold} {shlex.quote(usage_pause.state_file)} "
-            f"{usage_pause.max_stale_seconds} || true"
+            f"{usage_pause.max_stale_seconds} {shlex.quote(marker_id)} "
+            f"{shlex.quote(str(override_dir))} || true"
         )
         settings["hooks"]["PreToolUse"].append({
             "hooks": [{"type": "command", "command": usage_pause_cmd}],
