@@ -1,7 +1,10 @@
 """Tests for the worker_prompt module."""
 
+import json
+
 import pytest
 
+from maniple_mcp import config as config_module
 from maniple_mcp.worker_prompt import (
     AgentType,
     generate_worker_prompt,
@@ -119,6 +122,37 @@ class TestIssueTrackerWorkflow:
             project_path=str(project_path)
         )
         assert f'git commit -m "{issue_id}:' in prompt
+
+
+class TestContextPauseHeadsUp:
+    """Tests for the context-pause threshold paragraph in worker prompts."""
+
+    def test_claude_prompt_mentions_default_threshold(self):
+        """With no config file, the default 75% threshold is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~75%" in prompt
+        assert "Write/Read/TodoWrite" in prompt
+
+    def test_claude_prompt_uses_configured_threshold(self):
+        """A custom configured threshold is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"threshold": 0.6}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~60%" in prompt
+
+    def test_claude_prompt_omits_heads_up_when_disabled(self):
+        """No heads-up paragraph is included when context_pause is disabled."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"enabled": False}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Context-window heads-up" not in prompt
+
+    def test_codex_prompt_has_no_heads_up(self):
+        """Codex workers have no hook mechanism, so no heads-up paragraph."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="codex")
+        assert "Context-window heads-up" not in prompt
 
 
 class TestGetCoordinatorGuidance:

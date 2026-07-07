@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from maniple_mcp import config as config_module
 from maniple_mcp.iterm_utils import build_stop_hook_settings_file
 
 
@@ -50,6 +51,104 @@ def test_settings_file_omits_auto_trust_when_disabled():
     assert "enableAllProjectMcpServers" not in settings
     # Hooks are still injected regardless of the trust setting.
     assert "Stop" in settings["hooks"]
+
+
+def _matcherless_pretooluse_entries(settings: dict) -> list[dict]:
+    """Return PreToolUse hook entries with no `matcher` key (fire for all tools)."""
+    return [
+        entry
+        for entry in settings["hooks"]["PreToolUse"]
+        if "matcher" not in entry
+    ]
+
+
+class TestContextPauseHookInjection:
+    """The context-pause PreToolUse hook (no matcher) is injected/omitted
+    based on config.context_pause, and existing hooks stay untouched."""
+
+    def test_context_pause_hook_present_by_default(self):
+        """With no config file, context_pause defaults to enabled -- the
+        hook is injected using the default threshold/window_tokens."""
+        path = build_stop_hook_settings_file("cp-default")
+        settings = json.loads(Path(path).read_text())
+
+        matches = _matcherless_pretooluse_entries(settings)
+        assert len(matches) == 1
+        command = matches[0]["hooks"][0]["command"]
+        assert "context_pause_hook.py" in command
+        assert "0.75" in command
+        assert "200000" in command
+
+    def test_context_pause_hook_writes_standalone_script(self):
+        """The hook script file itself is written to the settings dir and
+        matches the generated stdlib-only source."""
+        from maniple_mcp.context_pause_hook import (
+            HOOK_SCRIPT_FILENAME,
+            render_hook_script,
+        )
+
+        path = build_stop_hook_settings_file("cp-script")
+        script_path = Path(path).parent / HOOK_SCRIPT_FILENAME
+        assert script_path.exists()
+        assert script_path.read_text() == render_hook_script()
+
+    def test_context_pause_hook_absent_when_disabled(self, tmp_path):
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"enabled": False}})
+        )
+
+        path = build_stop_hook_settings_file("cp-disabled")
+        settings = json.loads(Path(path).read_text())
+
+        assert _matcherless_pretooluse_entries(settings) == []
+        # Existing hooks are unaffected by disabling context_pause.
+        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == (
+            "echo [worker-done:cp-disabled]"
+        )
+        pre = settings["hooks"]["PreToolUse"]
+        assert len(pre) == 1
+        assert pre[0]["matcher"] == "AskUserQuestion"
+
+    def test_context_pause_hook_uses_configured_threshold_and_window(self, tmp_path):
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({
+                "context_pause": {
+                    "enabled": True,
+                    "threshold": 0.6,
+                    "window_tokens": 50000,
+                }
+            })
+        )
+
+        path = build_stop_hook_settings_file("cp-custom")
+        settings = json.loads(Path(path).read_text())
+
+        matches = _matcherless_pretooluse_entries(settings)
+        assert len(matches) == 1
+        command = matches[0]["hooks"][0]["command"]
+        assert "0.6" in command
+        assert "50000" in command
+
+    def test_existing_hooks_unchanged_with_context_pause_enabled(self):
+        """Stop and AskUserQuestion Pre/PostToolUse hooks are untouched when
+        the context-pause hook is also injected."""
+        marker = "cp-parity"
+        path = build_stop_hook_settings_file(marker)
+        settings = json.loads(Path(path).read_text())
+        hooks = settings["hooks"]
+
+        assert hooks["Stop"][0]["hooks"][0]["command"] == f"echo [worker-done:{marker}]"
+
+        pre_askuserquestion = [e for e in hooks["PreToolUse"] if e.get("matcher") == "AskUserQuestion"]
+        assert len(pre_askuserquestion) == 1
+        pre_cmd = pre_askuserquestion[0]["hooks"][0]["command"]
+        assert f"{marker}.json" in pre_cmd
+        assert "pending" in pre_cmd
+
+        post = hooks["PostToolUse"][0]
+        assert post["matcher"] == "AskUserQuestion"
+        post_cmd = post["hooks"][0]["command"]
+        assert f"{marker}.json" in post_cmd
 
 
 def _mock_cli():

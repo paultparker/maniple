@@ -596,6 +596,11 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
     temp directory, crashing on Unix sockets. See:
     https://github.com/anthropics/claude-code/issues/14438
 
+    Also injects a no-matcher PreToolUse hook (config.context_pause, enabled
+    by default) that pauses a worker once its context usage crosses a
+    threshold -- see context_pause_hook.py for the hook script itself. This
+    only applies to Claude Code workers; Codex has no hook mechanism.
+
     Args:
         marker_id: Unique ID to embed in the marker (typically session_id)
 
@@ -645,6 +650,32 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
             }],
         }
     }
+
+    # Context-pause hook: blocks a worker's tool calls once its context usage
+    # crosses config.context_pause.threshold, except for a small allowlist of
+    # tools (Write/Read/TodoWrite) so it can still save a handoff. Config is
+    # loaded lazily here (same pattern as cli_backends.claude.get_claude_command)
+    # so tests can monkeypatch config.CONFIG_PATH without a real config file.
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        context_pause = None
+
+    if context_pause is not None and context_pause.enabled:
+        from .context_pause_hook import HOOK_SCRIPT_FILENAME, render_hook_script
+
+        hook_script_path = settings_dir / HOOK_SCRIPT_FILENAME
+        hook_script_path.write_text(render_hook_script())
+
+        context_pause_cmd = (
+            f"python3 {hook_script_path} "
+            f"{context_pause.threshold} {context_pause.window_tokens}"
+        )
+        settings["hooks"]["PreToolUse"].append({
+            "hooks": [{"type": "command", "command": context_pause_cmd}],
+        })
 
     # Auto-approve the project's .mcp.json servers so the "New MCP server found"
     # trust prompt never blocks worker startup. Without this, the prompt stalls

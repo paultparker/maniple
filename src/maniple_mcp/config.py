@@ -73,6 +73,22 @@ class IssueTrackerConfig:
 
 
 @dataclass
+class ContextPauseConfig:
+    """Worker context-window pause thresholds.
+
+    Governs the PreToolUse hook (injected via build_stop_hook_settings_file
+    in iterm_utils.py) that blocks a Claude Code worker's tool calls once its
+    context usage crosses `threshold`, so it can only write a handoff (via
+    the hook's tool allowlist) before ending its turn. Codex workers have no
+    hook mechanism and are unaffected.
+    """
+
+    enabled: bool = True
+    threshold: float = 0.75
+    window_tokens: int = 200000
+
+
+@dataclass
 class ClaudeTeamConfig:
     """Top-level configuration container for claude-team."""
 
@@ -82,6 +98,7 @@ class ClaudeTeamConfig:
     terminal: TerminalConfig = field(default_factory=TerminalConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     issue_tracker: IssueTrackerConfig = field(default_factory=IssueTrackerConfig)
+    context_pause: ContextPauseConfig = field(default_factory=ContextPauseConfig)
 
 
 def default_config() -> ClaudeTeamConfig:
@@ -160,7 +177,15 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     # Validate expected top-level keys before parsing sections.
     _validate_keys(
         data,
-        {"version", "commands", "defaults", "terminal", "events", "issue_tracker"},
+        {
+            "version",
+            "commands",
+            "defaults",
+            "terminal",
+            "events",
+            "issue_tracker",
+            "context_pause",
+        },
         "config",
     )
     version = _read_version(data.get("version"))
@@ -169,6 +194,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     terminal = _parse_terminal(data.get("terminal"))
     events = _parse_events(data.get("events"))
     issue_tracker = _parse_issue_tracker(data.get("issue_tracker"))
+    context_pause = _parse_context_pause(data.get("context_pause"))
     return ClaudeTeamConfig(
         version=version,
         commands=commands,
@@ -176,6 +202,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
         terminal=terminal,
         events=events,
         issue_tracker=issue_tracker,
+        context_pause=context_pause,
     )
 
 
@@ -293,6 +320,30 @@ def _parse_issue_tracker(value: object) -> IssueTrackerConfig:
     )
 
 
+def _parse_context_pause(value: object) -> ContextPauseConfig:
+    # Parse worker context-window pause thresholds.
+    data = _ensure_dict(value, "context_pause")
+    _validate_keys(data, {"enabled", "threshold", "window_tokens"}, "context_pause")
+    return ContextPauseConfig(
+        enabled=_optional_bool(
+            data.get("enabled"),
+            "context_pause.enabled",
+            ContextPauseConfig.enabled,
+        ),
+        threshold=_optional_float(
+            data.get("threshold"),
+            "context_pause.threshold",
+            ContextPauseConfig.threshold,
+        ),
+        window_tokens=_optional_int(
+            data.get("window_tokens"),
+            "context_pause.window_tokens",
+            ContextPauseConfig.window_tokens,
+            min_value=1000,
+        ),
+    )
+
+
 def _ensure_dict(value: object, path: str) -> dict:
     # Ensure sections are JSON objects, defaulting to empty dicts.
     if value is None:
@@ -332,6 +383,18 @@ def _optional_int(value: object, path: str, default: int, min_value: int = 1) ->
     return value
 
 
+def _optional_float(value: object, path: str, default: float) -> float:
+    # Validate optional float fields constrained to the open interval (0, 1).
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path} must be a number")
+    number = float(value)
+    if not (0 < number < 1):
+        raise ConfigError(f"{path} must be strictly between 0 and 1")
+    return number
+
+
 def _optional_bool(value: object, path: str, default: bool) -> bool:
     # Validate optional boolean fields.
     if value is None:
@@ -363,6 +426,7 @@ __all__ = [
     "ClaudeTeamConfig",
     "CommandsConfig",
     "ConfigError",
+    "ContextPauseConfig",
     "DefaultsConfig",
     "EventsConfig",
     "IssueTrackerConfig",

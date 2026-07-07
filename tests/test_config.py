@@ -9,6 +9,7 @@ from maniple_mcp.config import (
     ClaudeTeamConfig,
     CommandsConfig,
     ConfigError,
+    ContextPauseConfig,
     DefaultsConfig,
     EventsConfig,
     IssueTrackerConfig,
@@ -50,6 +51,13 @@ class TestDefaultConfig:
         """Default terminal backend is None (auto-detect)."""
         config = default_config()
         assert config.terminal.backend is None
+
+    def test_default_context_pause(self):
+        """Default context_pause values match spec."""
+        config = default_config()
+        assert config.context_pause.enabled is True
+        assert config.context_pause.threshold == 0.75
+        assert config.context_pause.window_tokens == 200000
 
     def test_default_events(self):
         """Default events config values."""
@@ -309,6 +317,16 @@ class TestJsonValidationErrors:
             "issue_tracker": {"invalid": "pebbles"},
         }))
         with pytest.raises(ConfigError, match="Unknown keys in issue_tracker"):
+            load_config(config_path)
+
+    def test_unknown_context_pause_key_raises_error(self, tmp_path: Path):
+        """Unknown keys in context_pause section raise ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"bad_key": True},
+        }))
+        with pytest.raises(ConfigError, match="Unknown keys in context_pause"):
             load_config(config_path)
 
     def test_section_not_object_raises_error(self, tmp_path: Path):
@@ -595,6 +613,150 @@ class TestFieldTypeValidation:
             load_config(config_path)
 
 
+class TestContextPauseValidation:
+    """Tests for context_pause config section validation."""
+
+    def test_valid_override(self, tmp_path: Path):
+        """A valid context_pause override parses correctly."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {
+                "enabled": True,
+                "threshold": 0.5,
+                "window_tokens": 100000,
+            },
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.enabled is True
+        assert config.context_pause.threshold == 0.5
+        assert config.context_pause.window_tokens == 100000
+
+    def test_enabled_false(self, tmp_path: Path):
+        """context_pause.enabled can be set to False."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"enabled": False},
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.enabled is False
+        # Other fields keep their defaults.
+        assert config.context_pause.threshold == 0.75
+        assert config.context_pause.window_tokens == 200000
+
+    def test_enabled_not_bool(self, tmp_path: Path):
+        """Non-boolean enabled raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"enabled": "yes"},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.enabled must be a boolean"):
+            load_config(config_path)
+
+    def test_threshold_zero_raises_error(self, tmp_path: Path):
+        """threshold of exactly 0 is invalid (must be strictly > 0)."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 0},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_one_raises_error(self, tmp_path: Path):
+        """threshold of exactly 1 is invalid (must be strictly < 1)."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 1},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_negative_raises_error(self, tmp_path: Path):
+        """Negative threshold is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": -0.1},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_above_one_raises_error(self, tmp_path: Path):
+        """threshold above 1 is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 1.5},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_not_a_number_raises_error(self, tmp_path: Path):
+        """Non-numeric threshold raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": "high"},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_bool_not_accepted(self, tmp_path: Path):
+        """Boolean is not accepted for the numeric threshold field."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": True},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_accepts_integer_boundary_value(self, tmp_path: Path):
+        """An in-range integer (e.g. accidentally passed as int) is accepted."""
+        # Not a realistic value, but validates int -> float coercion path.
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 0.9},
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.threshold == 0.9
+
+    def test_window_tokens_below_minimum_raises_error(self, tmp_path: Path):
+        """window_tokens below 1000 raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"window_tokens": 999},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.window_tokens must be at least 1000"):
+            load_config(config_path)
+
+    def test_window_tokens_not_int_raises_error(self, tmp_path: Path):
+        """Non-integer window_tokens raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"window_tokens": "big"},
+        }))
+        with pytest.raises(ConfigError, match="context_pause.window_tokens must be an integer"):
+            load_config(config_path)
+
+    def test_window_tokens_minimum_accepted(self, tmp_path: Path):
+        """window_tokens of exactly 1000 is accepted."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"window_tokens": 1000},
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.window_tokens == 1000
+
+
 class TestValidLiteralValues:
     """Tests for valid literal string values."""
 
@@ -736,6 +898,13 @@ class TestDataclasses:
         config = IssueTrackerConfig()
         assert config.override is None
 
+    def test_context_pause_config_defaults(self):
+        """ContextPauseConfig has correct defaults."""
+        config = ContextPauseConfig()
+        assert config.enabled is True
+        assert config.threshold == 0.75
+        assert config.window_tokens == 200000
+
     def test_claude_team_config_defaults(self):
         """ClaudeTeamConfig has correct nested defaults."""
         config = ClaudeTeamConfig()
@@ -745,3 +914,4 @@ class TestDataclasses:
         assert isinstance(config.terminal, TerminalConfig)
         assert isinstance(config.events, EventsConfig)
         assert isinstance(config.issue_tracker, IssueTrackerConfig)
+        assert isinstance(config.context_pause, ContextPauseConfig)

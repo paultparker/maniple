@@ -109,6 +109,37 @@ class TestConfigSet:
         config = load_config()
         assert config.events.stale_threshold_minutes == 30
 
+    def test_set_context_pause_enabled(self, config_path: Path):
+        """set_config_value persists context_pause.enabled."""
+        set_config_value("context_pause.enabled", "false")
+        config = load_config()
+        assert config.context_pause.enabled is False
+
+    def test_set_context_pause_threshold(self, config_path: Path):
+        """set_config_value persists context_pause.threshold."""
+        set_config_value("context_pause.threshold", "0.6")
+        config = load_config()
+        assert config.context_pause.threshold == 0.6
+
+    def test_set_context_pause_threshold_out_of_range_rejected(self, config_path: Path):
+        """set_config_value rejects an out-of-range threshold."""
+        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
+            set_config_value("context_pause.threshold", "1.5")
+
+    def test_set_context_pause_window_tokens(self, config_path: Path):
+        """set_config_value persists context_pause.window_tokens."""
+        set_config_value("context_pause.window_tokens", "50000")
+        config = load_config()
+        assert config.context_pause.window_tokens == 50000
+
+    def test_get_context_pause_threshold(self, config_path: Path):
+        """get_config_value returns context_pause.threshold."""
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 0.6},
+        }))
+        assert get_config_value("context_pause.threshold") == 0.6
+
 
 class TestStaleThresholdEnvOverride:
     """Tests for stale_threshold_minutes env override."""

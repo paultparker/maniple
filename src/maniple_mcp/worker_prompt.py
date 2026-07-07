@@ -35,6 +35,26 @@ def _supported_tracker_list() -> str:
     return ", ".join(sorted(BACKEND_REGISTRY.keys()))
 
 
+def _context_pause_threshold_percent() -> Optional[int]:
+    """Return the configured context-pause threshold as a whole percent.
+
+    Loads config lazily (same pattern as get_claude_command /
+    build_stop_hook_settings_file) so this stays monkeypatchable in tests.
+    Returns None if context_pause is disabled or config can't be read, in
+    which case the caller should omit the heads-up paragraph entirely.
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return round(context_pause.threshold * 100)
+
+
 def _build_tracker_workflow_section(
     issue_id: str,
     backend: IssueTrackerBackend | None,
@@ -182,6 +202,18 @@ def _generate_claude_worker_prompt(
    handles that.
 """
         extra_sections += commit_section
+
+    # Context-pause heads-up (Claude only -- Codex has no hook mechanism).
+    # Omitted entirely if context_pause is disabled or config can't be read.
+    threshold_percent = _context_pause_threshold_percent()
+    if threshold_percent is not None:
+        extra_sections += f"""
+**Context-window heads-up:** once your context usage hits ~{threshold_percent}%,
+your tool calls will be blocked automatically (except Write/Read/TodoWrite) so
+you can still save a brief handoff. If that happens, write a short handoff file
+(current state, what's done, next steps) and end your turn — the coordinator
+will pick up from there.
+"""
 
     # Closing/assignment section - 4 cases based on issue_id and custom_prompt
     if issue_id and custom_prompt:

@@ -189,6 +189,11 @@ maniple config set <key> <value>  # Set and persist a value
   },
   "issue_tracker": {
     "override": null
+  },
+  "context_pause": {
+    "enabled": true,
+    "threshold": 0.75,
+    "window_tokens": 200000
   }
 }
 ```
@@ -205,6 +210,19 @@ maniple config set <key> <value>  # Set and persist a value
 | `events.max_size_mb` | int | Max event log file size before rotation |
 | `events.recent_hours` | int | Hours of events to retain |
 | `issue_tracker.override` | `"beads"` or `"pebbles"` | Force a specific issue tracker |
+| `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses `threshold` (default on) |
+| `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause (default `0.75` = 75%) |
+| `context_pause.window_tokens` | int, min `1000` | Context window size used to compute usage fraction (default `200000`) |
+
+### Context-Pause (Claude Code workers only)
+
+Once a worker's context usage crosses `context_pause.threshold`, a PreToolUse
+hook (injected via `build_stop_hook_settings_file` in `iterm_utils.py`, shared
+by both terminal backends) blocks its tool calls except for `Write`, `Read`,
+and `TodoWrite` — enough to write a brief handoff file before ending its turn.
+The hook fails open on any error (missing/malformed transcript, missing
+usage data) so it can never break a worker. **Codex workers are excluded** —
+Codex has no hook mechanism, so this feature has no effect there.
 
 ## Environment Variables
 
