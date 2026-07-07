@@ -143,15 +143,17 @@ class TestContextPauseHookInjection:
         assert "50000" in command
 
     def test_context_pause_hook_quotes_script_path(self):
-        """The hook script path is quoted so paths containing spaces (e.g. a
-        user's home directory) are handled safely."""
+        """The hook script path is shell-quoted (via shlex.quote) so paths
+        containing spaces or shell metacharacters are handled safely."""
+        import shlex
+
         path = build_stop_hook_settings_file("cp-quoted")
         settings = json.loads(Path(path).read_text())
         script_path = Path(path).parent / "context_pause_hook.py"
 
         matches = _matcherless_pretooluse_entries(settings)
         command = matches[0]["hooks"][0]["command"]
-        assert f'"{script_path}"' in command
+        assert shlex.quote(str(script_path)) in command
 
     def test_context_pause_hook_command_is_best_effort(self):
         """Command ends with `|| true`, matching the neighboring AskUserQuestion
@@ -244,6 +246,13 @@ class TestUsagePauseHookInjection:
         assert "600" in command
 
     def test_usage_pause_hook_quotes_state_file_and_script_path(self):
+        """Both the script path and state_file are shell-quoted (via
+        shlex.quote) so values containing spaces or shell metacharacters
+        are handled safely. Simple paths like the defaults have no unsafe
+        characters, so shlex.quote leaves them unquoted -- this test just
+        confirms the same shlex.quote() output is what's embedded."""
+        import shlex
+
         path = build_stop_hook_settings_file("up-quoted")
         settings = json.loads(Path(path).read_text())
         script_path = Path(path).parent / "usage_pause_hook.py"
@@ -251,8 +260,33 @@ class TestUsagePauseHookInjection:
         commands = _matcherless_commands(settings)
         matches = [c for c in commands if "usage_pause_hook.py" in c]
         command = matches[0]
-        assert f'"{script_path}"' in command
-        assert '"/tmp/cc-statusline-input.json"' in command
+        assert shlex.quote(str(script_path)) in command
+        assert shlex.quote("/tmp/cc-statusline-input.json") in command
+
+    def test_usage_pause_hook_safely_quotes_state_file_with_quote_and_space(self):
+        """A state_file value containing a double-quote and a space (e.g. a
+        misconfigured or malicious value) must not break out of the
+        generated shell command -- shlex.quote() handles this safely,
+        unlike naive '"' + value + '"' wrapping."""
+        import shlex
+
+        dangerous_state_file = '/tmp/weird "quoted" file.json'
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"state_file": dangerous_state_file}})
+        )
+
+        path = build_stop_hook_settings_file("up-dangerous")
+        settings = json.loads(Path(path).read_text())
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        command = matches[0]
+
+        assert shlex.quote(dangerous_state_file) in command
+        # The naive '"value"' wrapping would break the quoting (the
+        # embedded '"' ends the naive quoted string early) -- confirm the
+        # command still parses into exactly the token we expect.
+        tokens = shlex.split(command)
+        assert dangerous_state_file in tokens
 
     def test_usage_pause_hook_command_is_best_effort(self):
         path = build_stop_hook_settings_file("up-besteffort")

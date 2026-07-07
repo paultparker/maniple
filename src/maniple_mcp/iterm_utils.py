@@ -698,18 +698,24 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         usage_pause = None
 
     if context_pause is not None and context_pause.enabled:
+        import shlex
+
         from .context_pause_hook import HOOK_SCRIPT_FILENAME, render_hook_script
 
         hook_script_path = settings_dir / HOOK_SCRIPT_FILENAME
         _write_if_changed(hook_script_path, render_hook_script())
 
-        # Quote the script path (it may contain spaces) and append `|| true`
-        # to match the neighboring hooks' best-effort style: only an exit
-        # code of 2 blocks a tool call, but any other non-zero exit (e.g.
-        # python3 missing) surfaces a user-visible hook warning, which
-        # `|| true` silences.
+        # Shell-quote the script path (it may contain spaces) via
+        # shlex.quote -- naive '"' + value + '"' wrapping breaks (and can
+        # inject into the shell invocation) if the value itself contains a
+        # double-quote. threshold/window_tokens are validated numerics, so
+        # plain interpolation is safe for those. Append `|| true` to match
+        # the neighboring hooks' best-effort style: only an exit code of 2
+        # blocks a tool call, but any other non-zero exit (e.g. python3
+        # missing) surfaces a user-visible hook warning, which `|| true`
+        # silences.
         context_pause_cmd = (
-            f'python3 "{hook_script_path}" '
+            f"python3 {shlex.quote(str(hook_script_path))} "
             f"{context_pause.threshold} {context_pause.window_tokens} || true"
         )
         settings["hooks"]["PreToolUse"].append({
@@ -717,6 +723,8 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         })
 
     if usage_pause is not None and usage_pause.enabled:
+        import shlex
+
         from .usage_pause_hook import (
             HOOK_SCRIPT_FILENAME as USAGE_PAUSE_SCRIPT_FILENAME,
             render_hook_script as render_usage_pause_hook_script,
@@ -725,11 +733,15 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         usage_hook_script_path = settings_dir / USAGE_PAUSE_SCRIPT_FILENAME
         _write_if_changed(usage_hook_script_path, render_usage_pause_hook_script())
 
-        # Quote both the script path and state_file (either may contain
-        # spaces) and append `|| true`, same best-effort style as context_pause.
+        # Shell-quote both the script path and state_file via shlex.quote.
+        # state_file is user-configurable (config only validates
+        # non-emptiness), so naive '"' + value + '"' wrapping is unsafe --
+        # a value containing '"' or shell metacharacters would break the
+        # quoting and inject into this command. threshold/max_stale_seconds
+        # are validated numerics, so plain interpolation is safe for those.
         usage_pause_cmd = (
-            f'python3 "{usage_hook_script_path}" '
-            f'{usage_pause.threshold} "{usage_pause.state_file}" '
+            f"python3 {shlex.quote(str(usage_hook_script_path))} "
+            f"{usage_pause.threshold} {shlex.quote(usage_pause.state_file)} "
             f"{usage_pause.max_stale_seconds} || true"
         )
         settings["hooks"]["PreToolUse"].append({
