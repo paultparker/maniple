@@ -193,6 +193,13 @@ def _parse_optional_string(raw_value: str, field: str) -> str | None:
     return raw_value
 
 
+def _parse_nonempty_string(raw_value: str, field: str) -> str:
+    # Parse required (non-nullable) string fields, e.g. usage_pause.state_file.
+    if not raw_value.strip():
+        raise ConfigError(f"{field} cannot be empty")
+    return raw_value
+
+
 def _parse_bool(raw_value: str, field: str) -> bool:
     # Parse boolean values in JSON-compatible form.
     normalized = raw_value.strip().lower()
@@ -323,6 +330,14 @@ _FIELD_PARSERS: dict[str, Callable[[str, str], object]] = {
         value,
         field,
         1000,
+    ),
+    "usage_pause.enabled": _parse_bool,
+    "usage_pause.threshold": _parse_open_unit_float,
+    "usage_pause.state_file": _parse_nonempty_string,
+    "usage_pause.max_stale_seconds": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1,
     ),
 }
 

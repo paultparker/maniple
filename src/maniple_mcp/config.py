@@ -97,6 +97,33 @@ class ContextPauseConfig:
 
 
 @dataclass
+class UsagePauseConfig:
+    """Account 5-hour usage-window (plan credit quota) pause thresholds.
+
+    Sibling to ContextPauseConfig: governs a second PreToolUse hook (injected
+    via build_stop_hook_settings_file in iterm_utils.py) that blocks a Claude
+    Code worker's tool calls once the ACCOUNT's rolling 5-hour usage window
+    crosses `threshold` -- this is the Claude plan's session credit quota,
+    not context usage. Claude Code's statusline stdin JSON carries
+    `rate_limits.five_hour.used_percentage`; hooks don't receive rate_limits
+    natively, so the hook script reads it from `state_file`, which the
+    user's statusline command must cache its full stdin JSON to on every
+    update (workers inherit that statusline, so the file stays fresh while
+    any session works).
+
+    `rate_limits` is only present in the statusline payload for Pro/Max
+    OAuth logins -- under API-key auth it's simply absent, so the hook
+    fails open (no-ops) there too. Codex workers have no hook mechanism and
+    are unaffected.
+    """
+
+    enabled: bool = True
+    threshold: float = 0.75
+    state_file: str = "/tmp/cc-statusline-input.json"
+    max_stale_seconds: int = 600
+
+
+@dataclass
 class ClaudeTeamConfig:
     """Top-level configuration container for claude-team."""
 
@@ -107,6 +134,7 @@ class ClaudeTeamConfig:
     events: EventsConfig = field(default_factory=EventsConfig)
     issue_tracker: IssueTrackerConfig = field(default_factory=IssueTrackerConfig)
     context_pause: ContextPauseConfig = field(default_factory=ContextPauseConfig)
+    usage_pause: UsagePauseConfig = field(default_factory=UsagePauseConfig)
 
 
 def default_config() -> ClaudeTeamConfig:
@@ -193,6 +221,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
             "events",
             "issue_tracker",
             "context_pause",
+            "usage_pause",
         },
         "config",
     )
@@ -203,6 +232,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     events = _parse_events(data.get("events"))
     issue_tracker = _parse_issue_tracker(data.get("issue_tracker"))
     context_pause = _parse_context_pause(data.get("context_pause"))
+    usage_pause = _parse_usage_pause(data.get("usage_pause"))
     return ClaudeTeamConfig(
         version=version,
         commands=commands,
@@ -211,6 +241,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
         events=events,
         issue_tracker=issue_tracker,
         context_pause=context_pause,
+        usage_pause=usage_pause,
     )
 
 
@@ -352,6 +383,37 @@ def _parse_context_pause(value: object) -> ContextPauseConfig:
     )
 
 
+def _parse_usage_pause(value: object) -> UsagePauseConfig:
+    # Parse account 5-hour usage-window pause thresholds.
+    data = _ensure_dict(value, "usage_pause")
+    _validate_keys(
+        data, {"enabled", "threshold", "state_file", "max_stale_seconds"}, "usage_pause"
+    )
+    return UsagePauseConfig(
+        enabled=_optional_bool(
+            data.get("enabled"),
+            "usage_pause.enabled",
+            UsagePauseConfig.enabled,
+        ),
+        threshold=_optional_float(
+            data.get("threshold"),
+            "usage_pause.threshold",
+            UsagePauseConfig.threshold,
+        ),
+        state_file=_optional_nonempty_str(
+            data.get("state_file"),
+            "usage_pause.state_file",
+            UsagePauseConfig.state_file,
+        ),
+        max_stale_seconds=_optional_int(
+            data.get("max_stale_seconds"),
+            "usage_pause.max_stale_seconds",
+            UsagePauseConfig.max_stale_seconds,
+            min_value=1,
+        ),
+    )
+
+
 def _ensure_dict(value: object, path: str) -> dict:
     # Ensure sections are JSON objects, defaulting to empty dicts.
     if value is None:
@@ -373,6 +435,18 @@ def _optional_str(value: object, path: str) -> str | None:
     # Validate optional string fields.
     if value is None:
         return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{path} must be a string")
+    if not value.strip():
+        raise ConfigError(f"{path} cannot be empty")
+    return value
+
+
+def _optional_nonempty_str(value: object, path: str, default: str) -> str:
+    # Validate optional string fields that default to a non-empty string
+    # (unlike _optional_str, missing values fall back to `default`, not None).
+    if value is None:
+        return default
     if not isinstance(value, str):
         raise ConfigError(f"{path} must be a string")
     if not value.strip():
@@ -441,6 +515,7 @@ __all__ = [
     "LayoutMode",
     "TerminalBackend",
     "TerminalConfig",
+    "UsagePauseConfig",
     "IssueTrackerName",
     "CONFIG_DIR",
     "CONFIG_PATH",

@@ -132,6 +132,48 @@ class TestConfigSet:
         config = load_config()
         assert config.context_pause.window_tokens == 50000
 
+    def test_set_usage_pause_enabled(self, config_path: Path):
+        """set_config_value persists usage_pause.enabled."""
+        set_config_value("usage_pause.enabled", "false")
+        config = load_config()
+        assert config.usage_pause.enabled is False
+
+    def test_set_usage_pause_threshold(self, config_path: Path):
+        """set_config_value persists usage_pause.threshold."""
+        set_config_value("usage_pause.threshold", "0.6")
+        config = load_config()
+        assert config.usage_pause.threshold == 0.6
+
+    def test_set_usage_pause_threshold_out_of_range_rejected(self, config_path: Path):
+        """set_config_value rejects an out-of-range threshold."""
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            set_config_value("usage_pause.threshold", "1.5")
+
+    def test_set_usage_pause_state_file(self, config_path: Path):
+        """set_config_value persists usage_pause.state_file."""
+        set_config_value("usage_pause.state_file", "/tmp/other.json")
+        config = load_config()
+        assert config.usage_pause.state_file == "/tmp/other.json"
+
+    def test_set_usage_pause_state_file_empty_rejected(self, config_path: Path):
+        """set_config_value rejects an empty state_file."""
+        with pytest.raises(ConfigError, match="usage_pause.state_file cannot be empty"):
+            set_config_value("usage_pause.state_file", "")
+
+    def test_set_usage_pause_max_stale_seconds(self, config_path: Path):
+        """set_config_value persists usage_pause.max_stale_seconds."""
+        set_config_value("usage_pause.max_stale_seconds", "120")
+        config = load_config()
+        assert config.usage_pause.max_stale_seconds == 120
+
+    def test_get_usage_pause_threshold(self, config_path: Path):
+        """get_config_value returns usage_pause.threshold."""
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": 0.6},
+        }))
+        assert get_config_value("usage_pause.threshold") == 0.6
+
     def test_get_context_pause_threshold(self, config_path: Path):
         """get_config_value returns context_pause.threshold."""
         config_path.write_text(json.dumps({

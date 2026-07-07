@@ -155,6 +155,44 @@ class TestContextPauseHeadsUp:
         assert "Context-window heads-up" not in prompt
 
 
+class TestUsagePauseHeadsUp:
+    """Tests for the usage-pause (5-hour account window) paragraph in
+    worker prompts -- sibling to TestContextPauseHeadsUp, independent."""
+
+    def test_claude_prompt_mentions_default_threshold(self):
+        """With no config file, the default 75% threshold is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~75%" in prompt
+        assert "5-hour" in prompt
+
+    def test_claude_prompt_uses_configured_threshold(self):
+        """A custom configured threshold is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"threshold": 0.6}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~60%" in prompt
+
+    def test_claude_prompt_omits_heads_up_when_disabled(self):
+        """No heads-up paragraph is included when usage_pause is disabled."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"enabled": False}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Plan usage heads-up" not in prompt
+
+    def test_codex_prompt_has_no_heads_up(self):
+        """Codex workers have no hook mechanism, so no heads-up paragraph."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="codex")
+        assert "Plan usage heads-up" not in prompt
+
+    def test_context_and_usage_heads_up_both_present_independently(self):
+        """Both heads-up paragraphs can coexist (each independently toggled)."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Context-window heads-up" in prompt
+        assert "Plan usage heads-up" in prompt
+
+
 class TestGetCoordinatorGuidance:
     """Tests for get_coordinator_guidance function."""
 

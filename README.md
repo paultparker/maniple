@@ -194,6 +194,12 @@ maniple config set <key> <value>  # Set and persist a value
     "enabled": true,
     "threshold": 0.75,
     "window_tokens": 1000000
+  },
+  "usage_pause": {
+    "enabled": true,
+    "threshold": 0.75,
+    "state_file": "/tmp/cc-statusline-input.json",
+    "max_stale_seconds": 600
   }
 }
 ```
@@ -213,6 +219,10 @@ maniple config set <key> <value>  # Set and persist a value
 | `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses `threshold` (default on) |
 | `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause (default `0.75` = 75%) |
 | `context_pause.window_tokens` | int, min `1000` | Context window size, matching the worker's model (default `1000000` = 1M, current for Opus/Sonnet/Fable; the hook auto-caps this at 200K when it detects a Haiku model) |
+| `usage_pause.enabled` | bool | Auto-pause Claude Code workers once the account's 5-hour usage window crosses `threshold` (default on) |
+| `usage_pause.threshold` | float, `0 < t < 1` | 5-hour usage fraction that triggers the pause (default `0.75` = 75%) |
+| `usage_pause.state_file` | string, non-empty | Path to the statusline's cached stdin JSON, read for `rate_limits` (default `/tmp/cc-statusline-input.json`) |
+| `usage_pause.max_stale_seconds` | int, min `1` | Max age of `state_file` before its data is considered stale and ignored (default `600`) |
 
 ### Context-Pause (Claude Code workers only)
 
@@ -227,6 +237,27 @@ substring match, no full model map) and caps the effective window at Haiku
 (missing/malformed transcript, missing usage data) so it can never break a
 worker. **Codex workers are excluded** — Codex has no hook mechanism, so
 this feature has no effect there.
+
+### Usage-Pause (Claude Code workers only)
+
+Sibling to context-pause, but for the **account's rolling 5-hour usage
+window** — the Claude plan's session credit quota — instead of context. A
+second PreToolUse hook (same allowlist/fail-open semantics) blocks tool
+calls once `rate_limits.five_hour.used_percentage` crosses
+`usage_pause.threshold`. Dependencies to be aware of:
+
+- **Requires the statusline to cache its stdin JSON.** Hooks don't receive
+  `rate_limits` natively — only Claude Code's statusline command does (a
+  [documented Claude Code feature](https://docs.claude.com/en/docs/claude-code/statusline)).
+  The user's statusline script must write its full stdin JSON to
+  `usage_pause.state_file` on every update; workers inherit that statusline,
+  so the file stays fresh while any session is working. If the file is
+  missing, unreadable, or older than `max_stale_seconds`, the hook fails
+  open (never pauses on stale/absent data).
+- **Pro/Max OAuth logins only.** `rate_limits` is only present in the
+  statusline payload for Pro/Max subscriptions — under API-key auth it's
+  simply absent, so this feature silently no-ops (fails open) there too.
+- **Codex workers are excluded** — Codex has no hook mechanism.
 
 ## Environment Variables
 

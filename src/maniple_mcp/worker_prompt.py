@@ -55,6 +55,27 @@ def _context_pause_threshold_percent() -> Optional[int]:
     return round(context_pause.threshold * 100)
 
 
+def _usage_pause_threshold_percent() -> Optional[int]:
+    """Return the configured usage-pause threshold as a whole percent.
+
+    Mirrors _context_pause_threshold_percent() for the sibling usage_pause
+    feature (the account's rolling 5-hour usage window, i.e. Claude plan
+    session credit quota -- not context). Returns None if usage_pause is
+    disabled or config can't be read, in which case the caller should omit
+    the heads-up paragraph entirely.
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        usage_pause = load_config().usage_pause
+    except ConfigError:
+        return None
+
+    if not usage_pause.enabled:
+        return None
+    return round(usage_pause.threshold * 100)
+
+
 def _build_tracker_workflow_section(
     issue_id: str,
     backend: IssueTrackerBackend | None,
@@ -213,6 +234,20 @@ your tool calls will be blocked automatically (except Write/Read/TodoWrite) so
 you can still save a brief handoff. If that happens, write a short handoff file
 (current state, what's done, next steps) and end your turn — the coordinator
 will pick up from there.
+"""
+
+    # Usage-pause heads-up (Claude only -- Codex has no hook mechanism).
+    # Sibling to context-pause, but for the account's rolling 5-hour usage
+    # window (Claude plan session credit quota) instead of context. Omitted
+    # entirely if usage_pause is disabled or config can't be read.
+    usage_threshold_percent = _usage_pause_threshold_percent()
+    if usage_threshold_percent is not None:
+        extra_sections += f"""
+**Plan usage heads-up:** once your account's 5-hour session usage hits
+~{usage_threshold_percent}%, your tool calls will be blocked automatically
+(except Write/Read/TodoWrite) so you can still save a brief handoff. If that
+happens, write a short handoff file (current state, what's done, next steps)
+and end your turn — the coordinator will pick up from there.
 """
 
     # Closing/assignment section - 4 cases based on issue_id and custom_prompt

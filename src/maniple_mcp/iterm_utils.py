@@ -620,10 +620,13 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
     temp directory, crashing on Unix sockets. See:
     https://github.com/anthropics/claude-code/issues/14438
 
-    Also injects a no-matcher PreToolUse hook (config.context_pause, enabled
-    by default) that pauses a worker once its context usage crosses a
-    threshold -- see context_pause_hook.py for the hook script itself. This
-    only applies to Claude Code workers; Codex has no hook mechanism.
+    Also injects up to two no-matcher PreToolUse hooks (independent of each
+    other, on by default): config.context_pause pauses a worker once its
+    context usage crosses a threshold (context_pause_hook.py), and
+    config.usage_pause pauses it once the ACCOUNT's rolling 5-hour usage
+    window -- the Claude plan's session credit quota, not context -- crosses
+    a threshold (usage_pause_hook.py). Both only apply to Claude Code
+    workers; Codex has no hook mechanism.
 
     Args:
         marker_id: Unique ID to embed in the marker (typically session_id)
@@ -675,17 +678,24 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         }
     }
 
-    # Context-pause hook: blocks a worker's tool calls once its context usage
-    # crosses config.context_pause.threshold, except for a small allowlist of
-    # tools (Write/Read/TodoWrite) so it can still save a handoff. Config is
-    # loaded lazily here (same pattern as cli_backends.claude.get_claude_command)
-    # so tests can monkeypatch config.CONFIG_PATH without a real config file.
+    # Context-pause / usage-pause hooks: block a worker's tool calls once
+    # either its context usage (context_pause) or the ACCOUNT's rolling
+    # 5-hour usage window (usage_pause, a sibling feature -- plan credit
+    # quota, not context) crosses its configured threshold, except for a
+    # small allowlist of tools (Write/Read/TodoWrite) so it can still save a
+    # handoff. Config is loaded lazily here (same pattern as
+    # cli_backends.claude.get_claude_command) so tests can monkeypatch
+    # config.CONFIG_PATH without a real config file. The two hooks are
+    # independent -- either, both, or neither may be injected.
     try:
         from .config import ConfigError, load_config
 
-        context_pause = load_config().context_pause
+        _pause_config = load_config()
+        context_pause = _pause_config.context_pause
+        usage_pause = _pause_config.usage_pause
     except ConfigError:
         context_pause = None
+        usage_pause = None
 
     if context_pause is not None and context_pause.enabled:
         from .context_pause_hook import HOOK_SCRIPT_FILENAME, render_hook_script
@@ -704,6 +714,26 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         )
         settings["hooks"]["PreToolUse"].append({
             "hooks": [{"type": "command", "command": context_pause_cmd}],
+        })
+
+    if usage_pause is not None and usage_pause.enabled:
+        from .usage_pause_hook import (
+            HOOK_SCRIPT_FILENAME as USAGE_PAUSE_SCRIPT_FILENAME,
+            render_hook_script as render_usage_pause_hook_script,
+        )
+
+        usage_hook_script_path = settings_dir / USAGE_PAUSE_SCRIPT_FILENAME
+        _write_if_changed(usage_hook_script_path, render_usage_pause_hook_script())
+
+        # Quote both the script path and state_file (either may contain
+        # spaces) and append `|| true`, same best-effort style as context_pause.
+        usage_pause_cmd = (
+            f'python3 "{usage_hook_script_path}" '
+            f'{usage_pause.threshold} "{usage_pause.state_file}" '
+            f"{usage_pause.max_stale_seconds} || true"
+        )
+        settings["hooks"]["PreToolUse"].append({
+            "hooks": [{"type": "command", "command": usage_pause_cmd}],
         })
 
     # Auto-approve the project's .mcp.json servers so the "New MCP server found"

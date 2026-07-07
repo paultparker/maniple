@@ -62,20 +62,26 @@ def _matcherless_pretooluse_entries(settings: dict) -> list[dict]:
     ]
 
 
+def _matcherless_commands(settings: dict) -> list[str]:
+    return [e["hooks"][0]["command"] for e in _matcherless_pretooluse_entries(settings)]
+
+
 class TestContextPauseHookInjection:
     """The context-pause PreToolUse hook (no matcher) is injected/omitted
     based on config.context_pause, and existing hooks stay untouched."""
 
     def test_context_pause_hook_present_by_default(self):
         """With no config file, context_pause defaults to enabled -- the
-        hook is injected using the default threshold/window_tokens."""
+        hook is injected using the default threshold/window_tokens.
+        (usage_pause is also enabled by default -- a sibling hook -- so we
+        filter to the context_pause-specific command rather than assuming
+        there's exactly one matcherless entry.)"""
         path = build_stop_hook_settings_file("cp-default")
         settings = json.loads(Path(path).read_text())
 
-        matches = _matcherless_pretooluse_entries(settings)
+        matches = [c for c in _matcherless_commands(settings) if "context_pause_hook.py" in c]
         assert len(matches) == 1
-        command = matches[0]["hooks"][0]["command"]
-        assert "context_pause_hook.py" in command
+        command = matches[0]
         assert "0.75" in command
         assert "1000000" in command
 
@@ -93,8 +99,15 @@ class TestContextPauseHookInjection:
         assert script_path.read_text() == render_hook_script()
 
     def test_context_pause_hook_absent_when_disabled(self, tmp_path):
+        # usage_pause is disabled too, so this test stays isolated to
+        # context_pause's own on/off behavior (its independence from
+        # usage_pause is covered separately by
+        # TestUsagePauseHookInjection.test_context_and_usage_pause_are_independent).
         config_module.CONFIG_PATH.write_text(
-            json.dumps({"context_pause": {"enabled": False}})
+            json.dumps({
+                "context_pause": {"enabled": False},
+                "usage_pause": {"enabled": False},
+            })
         )
 
         path = build_stop_hook_settings_file("cp-disabled")
@@ -123,9 +136,9 @@ class TestContextPauseHookInjection:
         path = build_stop_hook_settings_file("cp-custom")
         settings = json.loads(Path(path).read_text())
 
-        matches = _matcherless_pretooluse_entries(settings)
+        matches = [c for c in _matcherless_commands(settings) if "context_pause_hook.py" in c]
         assert len(matches) == 1
-        command = matches[0]["hooks"][0]["command"]
+        command = matches[0]
         assert "0.6" in command
         assert "50000" in command
 
@@ -209,6 +222,122 @@ class TestContextPauseHookInjection:
         assert post["matcher"] == "AskUserQuestion"
         post_cmd = post["hooks"][0]["command"]
         assert f"{marker}.json" in post_cmd
+
+
+class TestUsagePauseHookInjection:
+    """The usage-pause PreToolUse hook (no matcher) is injected/omitted
+    based on config.usage_pause, independent of context_pause, and existing
+    hooks stay untouched."""
+
+    def test_usage_pause_hook_present_by_default(self):
+        """With no config file, usage_pause defaults to enabled -- the hook
+        is injected using the default threshold/state_file/max_stale_seconds."""
+        path = build_stop_hook_settings_file("up-default")
+        settings = json.loads(Path(path).read_text())
+
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        assert len(matches) == 1
+        command = matches[0]
+        assert "0.75" in command
+        assert "/tmp/cc-statusline-input.json" in command
+        assert "600" in command
+
+    def test_usage_pause_hook_quotes_state_file_and_script_path(self):
+        path = build_stop_hook_settings_file("up-quoted")
+        settings = json.loads(Path(path).read_text())
+        script_path = Path(path).parent / "usage_pause_hook.py"
+
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        command = matches[0]
+        assert f'"{script_path}"' in command
+        assert '"/tmp/cc-statusline-input.json"' in command
+
+    def test_usage_pause_hook_command_is_best_effort(self):
+        path = build_stop_hook_settings_file("up-besteffort")
+        settings = json.loads(Path(path).read_text())
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        assert matches[0].rstrip().endswith("|| true")
+
+    def test_usage_pause_hook_writes_standalone_script(self):
+        from maniple_mcp.usage_pause_hook import (
+            HOOK_SCRIPT_FILENAME,
+            render_hook_script,
+        )
+
+        path = build_stop_hook_settings_file("up-script")
+        script_path = Path(path).parent / HOOK_SCRIPT_FILENAME
+        assert script_path.exists()
+        assert script_path.read_text() == render_hook_script()
+
+    def test_usage_pause_hook_absent_when_disabled(self):
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"enabled": False}})
+        )
+        path = build_stop_hook_settings_file("up-disabled")
+        settings = json.loads(Path(path).read_text())
+        commands = _matcherless_commands(settings)
+        assert not any("usage_pause_hook.py" in c for c in commands)
+
+    def test_usage_pause_hook_uses_configured_values(self):
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({
+                "usage_pause": {
+                    "enabled": True,
+                    "threshold": 0.6,
+                    "state_file": "/tmp/custom-statusline.json",
+                    "max_stale_seconds": 120,
+                }
+            })
+        )
+        path = build_stop_hook_settings_file("up-custom")
+        settings = json.loads(Path(path).read_text())
+        commands = _matcherless_commands(settings)
+        matches = [c for c in commands if "usage_pause_hook.py" in c]
+        command = matches[0]
+        assert "0.6" in command
+        assert "/tmp/custom-statusline.json" in command
+        assert "120" in command
+
+    def test_existing_hooks_unchanged_with_usage_pause_enabled(self):
+        marker = "up-parity"
+        path = build_stop_hook_settings_file(marker)
+        settings = json.loads(Path(path).read_text())
+        hooks = settings["hooks"]
+
+        assert hooks["Stop"][0]["hooks"][0]["command"] == f"echo [worker-done:{marker}]"
+        pre_askuserquestion = [e for e in hooks["PreToolUse"] if e.get("matcher") == "AskUserQuestion"]
+        assert len(pre_askuserquestion) == 1
+        post = hooks["PostToolUse"][0]
+        assert post["matcher"] == "AskUserQuestion"
+
+    @pytest.mark.parametrize(
+        "context_pause_enabled,usage_pause_enabled",
+        [(True, True), (True, False), (False, True), (False, False)],
+    )
+    def test_context_and_usage_pause_are_independent(
+        self, context_pause_enabled, usage_pause_enabled
+    ):
+        """Each of the 4 enabled/disabled combinations produces exactly the
+        expected set of matcherless PreToolUse hooks."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({
+                "context_pause": {"enabled": context_pause_enabled},
+                "usage_pause": {"enabled": usage_pause_enabled},
+            })
+        )
+        marker = f"combo-{context_pause_enabled}-{usage_pause_enabled}"
+        path = build_stop_hook_settings_file(marker)
+        settings = json.loads(Path(path).read_text())
+        commands = _matcherless_commands(settings)
+
+        has_context = any("context_pause_hook.py" in c for c in commands)
+        has_usage = any("usage_pause_hook.py" in c for c in commands)
+        assert has_context is context_pause_enabled
+        assert has_usage is usage_pause_enabled
+        assert len(commands) == sum([context_pause_enabled, usage_pause_enabled])
 
 
 def _mock_cli():

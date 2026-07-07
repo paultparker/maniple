@@ -14,6 +14,7 @@ from maniple_mcp.config import (
     EventsConfig,
     IssueTrackerConfig,
     TerminalConfig,
+    UsagePauseConfig,
     default_config,
     load_config,
     save_config,
@@ -58,6 +59,14 @@ class TestDefaultConfig:
         assert config.context_pause.enabled is True
         assert config.context_pause.threshold == 0.75
         assert config.context_pause.window_tokens == 1_000_000
+
+    def test_default_usage_pause(self):
+        """Default usage_pause values match spec."""
+        config = default_config()
+        assert config.usage_pause.enabled is True
+        assert config.usage_pause.threshold == 0.75
+        assert config.usage_pause.state_file == "/tmp/cc-statusline-input.json"
+        assert config.usage_pause.max_stale_seconds == 600
 
     def test_default_events(self):
         """Default events config values."""
@@ -327,6 +336,26 @@ class TestJsonValidationErrors:
             "context_pause": {"bad_key": True},
         }))
         with pytest.raises(ConfigError, match="Unknown keys in context_pause"):
+            load_config(config_path)
+
+    def test_unknown_usage_pause_key_raises_error(self, tmp_path: Path):
+        """Unknown keys in usage_pause section raise ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"bad_key": True},
+        }))
+        with pytest.raises(ConfigError, match="Unknown keys in usage_pause"):
+            load_config(config_path)
+
+    def test_unknown_top_level_key_usage_pause_typo_rejected(self, tmp_path: Path):
+        """A top-level key that isn't exactly 'usage_pause' is still rejected."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usagepause": {},
+        }))
+        with pytest.raises(ConfigError, match="Unknown keys in config"):
             load_config(config_path)
 
     def test_section_not_object_raises_error(self, tmp_path: Path):
@@ -757,6 +786,172 @@ class TestContextPauseValidation:
         assert config.context_pause.window_tokens == 1000
 
 
+class TestUsagePauseValidation:
+    """Tests for usage_pause config section validation."""
+
+    def test_valid_override(self, tmp_path: Path):
+        """A valid usage_pause override parses correctly."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {
+                "enabled": True,
+                "threshold": 0.5,
+                "state_file": "/tmp/custom-statusline.json",
+                "max_stale_seconds": 120,
+            },
+        }))
+        config = load_config(config_path)
+        assert config.usage_pause.enabled is True
+        assert config.usage_pause.threshold == 0.5
+        assert config.usage_pause.state_file == "/tmp/custom-statusline.json"
+        assert config.usage_pause.max_stale_seconds == 120
+
+    def test_enabled_false(self, tmp_path: Path):
+        """usage_pause.enabled can be set to False."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"enabled": False},
+        }))
+        config = load_config(config_path)
+        assert config.usage_pause.enabled is False
+        # Other fields keep their defaults.
+        assert config.usage_pause.threshold == 0.75
+        assert config.usage_pause.state_file == "/tmp/cc-statusline-input.json"
+        assert config.usage_pause.max_stale_seconds == 600
+
+    def test_enabled_not_bool(self, tmp_path: Path):
+        """Non-boolean enabled raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"enabled": "yes"},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.enabled must be a boolean"):
+            load_config(config_path)
+
+    def test_threshold_zero_raises_error(self, tmp_path: Path):
+        """threshold of exactly 0 is invalid (must be strictly > 0)."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": 0},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_one_raises_error(self, tmp_path: Path):
+        """threshold of exactly 1 is invalid (must be strictly < 1)."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": 1},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_negative_raises_error(self, tmp_path: Path):
+        """Negative threshold is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": -0.1},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_above_one_raises_error(self, tmp_path: Path):
+        """threshold above 1 is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": 1.5},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_not_a_number_raises_error(self, tmp_path: Path):
+        """Non-numeric threshold raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": "high"},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_threshold_bool_not_accepted(self, tmp_path: Path):
+        """Boolean is not accepted for the numeric threshold field."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"threshold": True},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
+            load_config(config_path)
+
+    def test_state_file_empty_string_raises_error(self, tmp_path: Path):
+        """Empty state_file is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"state_file": ""},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.state_file cannot be empty"):
+            load_config(config_path)
+
+    def test_state_file_whitespace_only_raises_error(self, tmp_path: Path):
+        """Whitespace-only state_file is invalid."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"state_file": "   "},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.state_file cannot be empty"):
+            load_config(config_path)
+
+    def test_state_file_not_string_raises_error(self, tmp_path: Path):
+        """Non-string state_file raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"state_file": 123},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.state_file must be a string"):
+            load_config(config_path)
+
+    def test_max_stale_seconds_below_minimum_raises_error(self, tmp_path: Path):
+        """max_stale_seconds below 1 raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"max_stale_seconds": 0},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.max_stale_seconds must be at least 1"):
+            load_config(config_path)
+
+    def test_max_stale_seconds_not_int_raises_error(self, tmp_path: Path):
+        """Non-integer max_stale_seconds raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"max_stale_seconds": "long"},
+        }))
+        with pytest.raises(ConfigError, match="usage_pause.max_stale_seconds must be an integer"):
+            load_config(config_path)
+
+    def test_max_stale_seconds_minimum_accepted(self, tmp_path: Path):
+        """max_stale_seconds of exactly 1 is accepted."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "usage_pause": {"max_stale_seconds": 1},
+        }))
+        config = load_config(config_path)
+        assert config.usage_pause.max_stale_seconds == 1
+
+
 class TestValidLiteralValues:
     """Tests for valid literal string values."""
 
@@ -905,6 +1100,14 @@ class TestDataclasses:
         assert config.threshold == 0.75
         assert config.window_tokens == 1_000_000
 
+    def test_usage_pause_config_defaults(self):
+        """UsagePauseConfig has correct defaults."""
+        config = UsagePauseConfig()
+        assert config.enabled is True
+        assert config.threshold == 0.75
+        assert config.state_file == "/tmp/cc-statusline-input.json"
+        assert config.max_stale_seconds == 600
+
     def test_claude_team_config_defaults(self):
         """ClaudeTeamConfig has correct nested defaults."""
         config = ClaudeTeamConfig()
@@ -915,3 +1118,4 @@ class TestDataclasses:
         assert isinstance(config.events, EventsConfig)
         assert isinstance(config.issue_tracker, IssueTrackerConfig)
         assert isinstance(config.context_pause, ContextPauseConfig)
+        assert isinstance(config.usage_pause, UsagePauseConfig)
