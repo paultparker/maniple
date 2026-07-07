@@ -40,7 +40,8 @@ Behavior:
   PreToolUse JSON output on stdout (same shape as context-pause), naming the
   5-hour session window, (best-effort) the local reset time from
   `resets_at`, and how to continue (override_usage_pause tool for worker
-  scope; `maniple usage-override` CLI for global scope).
+  scope -- coordinator may only call it with the user's explicit approval;
+  `maniple usage-override` CLI for global scope).
 - Fail open (exit 0, no output) on ANY error -- a broken hook must never
   block a worker.
 """
@@ -186,7 +187,8 @@ def main(argv):
         reason = (
             "Denied: sessions cannot grant themselves a usage-pause "
             "override by writing into the override directory. Ask the "
-            "coordinator to use override_usage_pause (or run "
+            "coordinator to use override_usage_pause, which it may only do "
+            "with the user's explicit approval (or run "
             "`maniple usage-override` for the global hook)."
         )
         print(json.dumps({
@@ -261,7 +263,8 @@ def main(argv):
     else:
         continue_hint = (
             " The coordinator can grant a continue with the "
-            "override_usage_pause tool."
+            "override_usage_pause tool, but only with the user's explicit "
+            "approval -- ask them first."
         )
 
     reason = (
