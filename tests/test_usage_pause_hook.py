@@ -44,6 +44,13 @@ def _rate_limits_payload(five_hour_percent: float, *, resets_at=None, seven_day_
     return {"rate_limits": rate_limits}
 
 
+# Default scope/override_dir for tests that don't care about the override
+# ladder -- a nonexistent dir means "no override file", identical to the
+# pre-ladder behavior these constants were introduced to preserve.
+_DEFAULT_SCOPE = "worker-test"
+_DEFAULT_OVERRIDE_DIR = "/nonexistent-maniple-override-dir-xyz"
+
+
 def _run_hook(
     hook_script: Path,
     tool_name: str,
@@ -51,15 +58,45 @@ def _run_hook(
     state_file: object,
     threshold: float = 0.75,
     max_stale_seconds: int = 600,
+    scope: str = _DEFAULT_SCOPE,
+    override_dir: object = _DEFAULT_OVERRIDE_DIR,
+    tool_input: dict | None = None,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     payload = {"tool_name": tool_name}
+    if tool_input is not None:
+        payload["tool_input"] = tool_input
+    # Always scrub MANIPLE_WORKER from the inherited environment so tests
+    # are deterministic regardless of the outer process's env; callers that
+    # want it set pass env={"MANIPLE_WORKER": "1"} explicitly.
+    run_env = {k: v for k, v in os.environ.items() if k != "MANIPLE_WORKER"}
+    if env is not None:
+        run_env.update(env)
     return subprocess.run(
-        [sys.executable, str(hook_script), str(threshold), str(state_file), str(max_stale_seconds)],
+        [
+            sys.executable,
+            str(hook_script),
+            str(threshold),
+            str(state_file),
+            str(max_stale_seconds),
+            str(scope),
+            str(override_dir),
+        ],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         timeout=10,
+        env=run_env,
     )
+
+
+def _write_override(
+    override_dir: Path, scope: str, *, threshold: float | None, expires_at: float
+) -> Path:
+    override_dir.mkdir(parents=True, exist_ok=True)
+    path = override_dir / f"{scope}.json"
+    path.write_text(json.dumps({"threshold": threshold, "expires_at": expires_at}))
+    return path
 
 
 class TestAllowlist:
@@ -224,6 +261,258 @@ class TestFailOpen:
             capture_output=True,
             text=True,
             timeout=10,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+
+class TestOverrideLadder:
+    """Escalating override ladder: effective_threshold = max(base, override
+    rung). Rungs: base -> 0.90 -> 0.95 -> unlimited (threshold=null).
+    Overrides expire at expires_at; expired/malformed overrides fall back
+    to base."""
+
+    def test_090_override_allows_at_85_percent(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w1", threshold=0.90, expires_at=time.time() + 3600)
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(85.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_090_override_denies_at_91_percent(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w1", threshold=0.90, expires_at=time.time() + 3600)
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(91.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_095_override_allows_at_92_percent_denies_at_96(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w1", threshold=0.95, expires_at=time.time() + 3600)
+
+        allow_state = _write_state_file(tmp_path, _rate_limits_payload(92.0), name="allow.json")
+        allow_result = _run_hook(
+            hook_script, "Bash", state_file=allow_state, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        assert allow_result.stdout.strip() == ""
+
+        deny_state = _write_state_file(tmp_path, _rate_limits_payload(96.0), name="deny.json")
+        deny_result = _run_hook(
+            hook_script, "Bash", state_file=deny_state, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        deny_output = json.loads(deny_result.stdout)
+        assert deny_output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_null_rung_is_unlimited_allows_at_99_percent(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w1", threshold=None, expires_at=time.time() + 3600)
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_expired_override_falls_back_to_base(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w1", threshold=None, expires_at=time.time() - 10)
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_malformed_override_falls_back_to_base(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir(parents=True)
+        (override_dir / "w1.json").write_text("not valid json {")
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_missing_override_falls_back_to_base(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"  # never created
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_override_scoped_to_different_worker_does_not_apply(self, hook_script, tmp_path):
+        """An override file for a different scope must not leak."""
+        override_dir = tmp_path / "overrides"
+        _write_override(override_dir, "w2", threshold=None, expires_at=time.time() + 3600)
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_deny_reason_mentions_worker_continue_hint(self, hook_script, tmp_path):
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=tmp_path / "overrides",
+        )
+        output = json.loads(result.stdout)
+        reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "override_usage_pause" in reason
+
+    def test_deny_reason_mentions_global_cli_hint(self, hook_script, tmp_path):
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(90.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="global", override_dir=tmp_path / "overrides",
+        )
+        output = json.loads(result.stdout)
+        reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "maniple usage-override" in reason
+
+
+class TestGlobalScopeManipleWorker:
+    """A globally-installed hook must no-op inside maniple workers (which
+    carry their own scoped hook already) -- but only for scope=='global'."""
+
+    def test_global_scope_with_maniple_worker_env_allows_even_over_threshold(
+        self, hook_script, tmp_path
+    ):
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="global", override_dir=tmp_path / "overrides",
+            env={"MANIPLE_WORKER": "1"},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_worker_scope_ignores_maniple_worker_env(self, hook_script, tmp_path):
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=tmp_path / "overrides",
+            env={"MANIPLE_WORKER": "1"},
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_global_scope_without_maniple_worker_env_still_denies(self, hook_script, tmp_path):
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="global", override_dir=tmp_path / "overrides",
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestAntiLoophole:
+    """A session must not be able to grant itself an override by writing
+    directly into the override directory -- checked BEFORE the normal
+    allowlist (which would otherwise let Write/Edit through)."""
+
+    def test_write_into_override_dir_denied_even_under_threshold(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))  # far under threshold
+        target = override_dir / "w1.json"
+        result = _run_hook(
+            hook_script, "Write", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={"file_path": str(target)},
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_edit_into_override_dir_denied(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))
+        target = override_dir / "w1.json"
+        result = _run_hook(
+            hook_script, "Edit", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={"file_path": str(target)},
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_notebook_edit_into_override_dir_denied(self, hook_script, tmp_path):
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))
+        target = override_dir / "w1.ipynb"
+        result = _run_hook(
+            hook_script, "NotebookEdit", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={"notebook_path": str(target)},
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_write_elsewhere_allowed_over_threshold(self, hook_script, tmp_path):
+        """Write is normally allowlisted -- only writes INTO override_dir
+        are specially denied."""
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        elsewhere = tmp_path / "handoff.md"
+        result = _run_hook(
+            hook_script, "Write", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={"file_path": str(elsewhere)},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_write_with_missing_file_path_fails_open_on_loophole_check(
+        self, hook_script, tmp_path
+    ):
+        """No file_path field -- the anti-loophole check can't evaluate, so
+        it's skipped (falls through to the normal allowlist, which allows
+        Write)."""
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(99.0))
+        result = _run_hook(
+            hook_script, "Write", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_bash_tool_into_override_dir_not_treated_as_loophole(self, hook_script, tmp_path):
+        """The anti-loophole check only applies to the specific
+        write-capable tools -- Bash isn't one of them (it's covered by the
+        normal threshold check instead)."""
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))
+        result = _run_hook(
+            hook_script, "Bash", state_file=state_file, threshold=0.75,
+            scope="w1", override_dir=override_dir,
+            tool_input={"command": f"echo hi > {override_dir}/w1.json"},
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
