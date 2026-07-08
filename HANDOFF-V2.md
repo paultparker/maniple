@@ -1,5 +1,17 @@
 # Usage-Pause v2 Handoff
 
+**STATUS: ALL 8 ITEMS DONE.** Final full suite: 812 passed, 1 e2e deselected
+(`uv run pytest -q -m "not e2e"`). Commits, in order: `9101c09` (item 2),
+`5725356` (item 3), `1b1b525` (shared `usage_override.py` module backing
+items 4-6), `1e86933` (item 4 — MCP tools, docstring-contract design
+change applied), `ca2b333` (items 5-6 — CLI subcommands), `a888d85` (item 7
+— worker prompt), `98f8c3c` (item 8 — docs). Design change from the
+coordinator (not in the original 8-item spec below): the coordinator may
+only call `override_usage_pause` with the user's explicit, per-continue
+permission, never on its own judgment — enforced via docstring contract in
+three places (tool docstring, hook deny-message, worker prompt). See each
+item's section below for what was done and any deviations.
+
 Handing off mid-task due to context exhaustion in the previous agent. This file
 summarizes where things stand against the 8-item spec from the coordinator's
 "Usage-pause v2" message (escalating override ladder feature, built on top of
@@ -88,7 +100,24 @@ change together with the handoff-prep `git add -A`; run `uv run pytest
 tests/test_worker_hooks.py -q` to double check after resuming (it passed
 right before the handoff interrupt, full suite was 755 passed).
 
-### 4. New MCP tools — NOT STARTED
+### 4. New MCP tools — DONE (commit `1e86933`, module `1b1b525`)
+Both tools exist (`src/maniple_mcp/tools/override_usage_pause.py`,
+`clear_usage_override.py`), registered in `tools/__init__.py`, backed by the
+shared `usage_override.py` module. Scope = `session.session_id` (confirmed
+no separate `stop_hook_marker_id` field). `clear_usage_override` accepts the
+literal `"global"` without registry resolution. Docstring contract applied:
+`override_usage_pause`'s docstring states prominently it may only be called
+after explicit per-continue user permission, never on the coordinator's own
+judgment. Hook deny-message hints updated to match (worker-scope hint names
+the approval requirement; anti-loophole reason too). 15 tests in
+`tests/test_override_usage_pause_tools.py`, including a regression test
+guarding the tools/__init__.py registration wiring (a real bug in an earlier
+draft — both tools were imported but never called in
+`register_all_tools()`).
+
+<details><summary>Original spec (superseded by the above — kept for context)</summary>
+
+NOT STARTED
 Neither `override_usage_pause(workers: list[str])` nor
 `clear_usage_override(workers: list[str])` exist yet. Per spec:
 - `override_usage_pause`: resolve each worker via `registry.resolve()` (or
@@ -123,7 +152,20 @@ Neither `override_usage_pause(workers: list[str])` nor
 
 No tests exist for this yet.
 
-### 5. CLI subcommand `maniple usage-override` — NOT STARTED
+</details>
+
+### 5. CLI subcommand `maniple usage-override` — DONE (commit `ca2b333`)
+`maniple usage-override` (no args: advance global rung; `--clear`; `--status`)
+wired into `server.py::main()`'s argparse tree, dispatching to a new
+`usage_override_cli.py` helper module (mirrors `config_cli.py`'s role) which
+is a thin wrapper over the shared `usage_override.py` ladder logic — no
+duplicated advance/clear logic. Tests: `tests/test_usage_override_cli.py`
+(helper functions) + `tests/test_server_usage_override_cli.py` (end-to-end
+argparse dispatch via `main()`, with `Path.home()` monkeypatched so nothing
+touches the real `~/.maniple`).
+
+<details><summary>Original spec (superseded by the above — kept for context)</summary>
+
 Mirror the existing `config` subcommand's argparse structure in
 `src/maniple_mcp/server.py::main()` (lines ~514-609 as of this handoff — grep
 `config_parser = subparsers.add_parser` to relocate). Add a sibling
@@ -145,7 +187,19 @@ dispatch block, similar to how `config_cli.py` is the shared logic layer
 
 No tests exist for this yet.
 
-### 6. Global installer `maniple install-global-usage-guard` — NOT STARTED
+</details>
+
+### 6. Global installer `maniple install-global-usage-guard` — DONE (commit `ca2b333`, core logic `1b1b525`)
+Core logic (`usage_override.install_global_usage_guard()`) and its tests
+(`TestInstallGlobalUsageGuard` in `tests/test_usage_override.py`) already
+existed from the shared-module commit; this item was really just wiring the
+CLI subcommand in `server.py::main()` (`--threshold`, default `0.80`) to call
+it and print `script_path` + the settings.json snippet. Covered by
+`TestInstallGlobalUsageGuardSubcommand` in
+`tests/test_server_usage_override_cli.py`.
+
+<details><summary>Original spec (superseded by the above — kept for context)</summary>
+
 New CLI subcommand (same `server.py::main()` argparse tree as item 5),
 accepting `--threshold` (default `0.80`). Must:
 - Write the rendered hook script (`usage_pause_hook.render_hook_script()`) to
@@ -162,7 +216,17 @@ accepting `--threshold` (default `0.80`). Must:
 
 No tests exist for this yet.
 
-### 7. worker_prompt.py update — NOT STARTED
+</details>
+
+### 7. worker_prompt.py update — DONE (commit `a888d85`)
+Added one sentence to the `**Plan usage heads-up:**` f-string in
+`_generate_claude_worker_prompt()`: the coordinator can grant a continue via
+`override_usage_pause`, but only with the user's explicit permission for
+that specific continue, never on its own judgment. Extended
+`TestUsagePauseHeadsUp` in `tests/test_worker_prompt.py`.
+
+<details><summary>Original spec (superseded by the above — kept for context)</summary>
+
 Spec: "update the usage-pause heads-up to mention the coordinator can grant
 continues (one sentence)." The existing heads-up paragraph is in
 `_generate_claude_worker_prompt()` in `src/maniple_mcp/worker_prompt.py`,
@@ -172,7 +236,16 @@ heads-up:**` f-string. Add one sentence there referencing the
 concept generally. `tests/test_worker_prompt.py`'s `TestUsagePauseHeadsUp`
 class is the existing test class to extend.
 
-### 8. Docs (README/CLAUDE.md) — NOT STARTED
+</details>
+
+### 8. Docs (README/CLAUDE.md) — DONE (commit `98f8c3c`)
+Both files' "Usage-Pause (Claude Code workers only)" sections now cover the
+ladder table, both MCP tools (with the explicit-permission contract on
+`override_usage_pause`), both CLI subcommands, global-install behavior, and
+the `MANIPLE_WORKER` exclusion mechanism.
+
+<details><summary>Original spec (superseded by the above — kept for context)</summary>
+
 Both files currently have a "Usage-Pause (Claude Code workers only)" section
 (README: search `### Usage-Pause`; CLAUDE.md: search `### Usage-Pause`) that
 only describes v1 behavior (flat threshold, no ladder). Needs: ladder table
@@ -180,7 +253,9 @@ only describes v1 behavior (flat threshold, no ladder). Needs: ladder table
 5-hour window), the two new MCP tools, the CLI subcommand, global-install
 steps, and the `MANIPLE_WORKER` exclusion mechanism.
 
-## Test status at handoff
+</details>
+
+## Test status at handoff (superseded — see banner at top for final tally)
 
 Full suite (`uv run pytest -q -m "not e2e"`) was **755 passed, 1 deselected**
 immediately before the interrupt (last run completed cleanly). The WIP commit
