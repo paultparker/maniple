@@ -49,14 +49,12 @@ Behavior (see PLAN in the maniple context-pause feature spec):
 
 from __future__ import annotations
 
+from ._hook_script_shared import ALLOWLISTED_TOOLS, FAIL_OPEN_MAIN_BLOCK
+
 HOOK_SCRIPT_FILENAME = "context_pause_hook.py"
 
-# Tools that remain allowed even once a worker is over the context-pause
-# threshold, so it can still write a brief handoff before ending its turn.
-ALLOWLISTED_TOOLS = ("Write", "Read", "TodoWrite")
 
-
-_HOOK_SCRIPT_SOURCE = '''#!/usr/bin/env python3
+_HOOK_SCRIPT_BODY = '''#!/usr/bin/env python3
 """Maniple context-pause PreToolUse hook (auto-generated, stdlib only).
 
 Blocks a worker's tool calls once its context-window usage crosses a
@@ -291,13 +289,9 @@ def main(argv):
     return 0
 
 
-if __name__ == "__main__":
-    try:
-        sys.exit(main(sys.argv[1:]))
-    except Exception:
-        # Absolute last resort: never let an unexpected error block a worker.
-        sys.exit(0)
 '''
+
+_HOOK_SCRIPT_SOURCE = _HOOK_SCRIPT_BODY + FAIL_OPEN_MAIN_BLOCK
 
 
 def render_hook_script() -> str:
