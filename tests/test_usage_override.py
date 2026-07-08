@@ -268,3 +268,30 @@ class TestInstallGlobalUsageGuard:
         from maniple_mcp.usage_pause_hook import render_hook_script
 
         assert content == render_hook_script()
+
+    def test_command_shell_quotes_paths_containing_spaces(self, tmp_path):
+        """script_path, state_file, and override_dir are all interpolated
+        raw into the printed command -- a path with a space (or shell
+        metacharacters) must be shlex.quoted, matching iterm_utils.py's
+        convention for the same kind of command-building, or the snippet
+        the user pastes into settings.json runs a broken command."""
+        import shlex
+
+        dest_dir = tmp_path / "hooks with spaces"
+        result = usage_override.install_global_usage_guard(
+            threshold=0.8, dest_dir=dest_dir
+        )
+        snippet = json.loads(result["snippet"])
+        command = snippet["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+        script_path = result["script_path"]
+        override_dir = usage_override.default_override_dir()
+
+        assert shlex.quote(str(script_path)) in command
+        assert shlex.quote(str(override_dir)) in command
+
+        # The command must be splittable back into distinct argv tokens --
+        # an unquoted space in dest_dir would otherwise split it into two
+        # tokens and desync every argument after it.
+        tokens = shlex.split(command.removesuffix("|| true").rstrip())
+        assert str(script_path) in tokens

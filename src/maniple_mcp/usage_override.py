@@ -210,11 +210,14 @@ def install_global_usage_guard(
     script_path = d / "usage-pause-global.py"
     _atomic_write_text(script_path, render_hook_script())
 
+    import shlex
+
     defaults = UsagePauseConfig()
     override_dir = default_override_dir()
     command = (
-        f"python3 {script_path} {threshold} {defaults.state_file} "
-        f"{defaults.max_stale_seconds} global {override_dir} || true"
+        f"python3 {shlex.quote(str(script_path))} {threshold} "
+        f"{shlex.quote(defaults.state_file)} {defaults.max_stale_seconds} "
+        f"global {shlex.quote(str(override_dir))} || true"
     )
     snippet_obj = {
         "hooks": {
