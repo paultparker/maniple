@@ -46,6 +46,63 @@ def _assistant_entry(
     }
 
 
+def _write_subagent_transcript(
+    tmp_path: Path, agent_id: str, entries: list[dict]
+) -> tuple[Path, Path]:
+    """Write a synthetic subagent transcript at the real derived layout:
+    `<parent-stem>/subagents/agent-<agent_id>.jsonl` next to a stand-in
+    parent transcript file. Returns (parent_transcript_path,
+    subagent_transcript_path).
+    """
+    parent_path = tmp_path / "transcript.jsonl"
+    parent_path.write_text("")
+    subagent_dir = tmp_path / "transcript" / "subagents"
+    subagent_dir.mkdir(parents=True, exist_ok=True)
+    subagent_path = subagent_dir / f"agent-{agent_id}.jsonl"
+    lines = [json.dumps(entry) for entry in entries]
+    subagent_path.write_text("\n".join(lines) + "\n")
+    return parent_path, subagent_path
+
+
+def _subagent_entry(usage: dict, agent_id: str, *, model: str | None = None) -> dict:
+    """A synthetic entry as it really appears in a subagent transcript file:
+    isSidechain is always True there, with an agentId tying it to its
+    subagent (verified empirically 2026-07-08)."""
+    message = {"role": "assistant", "usage": usage}
+    if model is not None:
+        message["model"] = model
+    return {
+        "type": "assistant",
+        "isSidechain": True,
+        "agentId": agent_id,
+        "message": message,
+    }
+
+
+def _run_hook_with_payload(
+    hook_script: Path,
+    payload: dict,
+    threshold: float = 0.75,
+    window_tokens: int = 200000,
+    max_tokens: int = 250000,
+    large_window_tokens: int = 300000,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(hook_script),
+            str(threshold),
+            str(window_tokens),
+            str(max_tokens),
+            str(large_window_tokens),
+        ],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
 def _filler_entry(size: int) -> dict:
     """A large, non-usage-bearing entry used to pad transcript size."""
     return {
@@ -647,3 +704,289 @@ class TestFailOpen:
             timeout=10,
         )
         assert result.returncode == 0
+
+
+class TestSubagentContext:
+    """A PreToolUse payload for a subagent's own tool call carries an
+    `agent_id` field. Empirically verified 2026-07-08 (headless `claude -p`
+    probe with a capturing PreToolUse hook, real Agent-tool subagent call):
+    `transcript_path` in that payload points at the PARENT transcript file
+    (same as a normal main-chain call), NOT a separate subagent file. The
+    subagent's own transcript lives on disk at
+    `<dir>/<parent-stem>/subagents/agent-<agent_id>.jsonl`, and *every*
+    entry in it is `isSidechain: true` carrying a matching `agentId`. So the
+    hook must derive that path itself and scan it keyed on `agentId` --
+    the ordinary sidechain skip would filter out 100% of a subagent
+    transcript's entries -- to bound a subagent's own context growth by the
+    same step-function limit as the main session."""
+
+    AGENT_ID = "ad99aa9504d322af6"
+
+    def test_subagent_over_limit_denies(self, hook_script, tmp_path):
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path,
+            self.AGENT_ID,
+            [_subagent_entry({"input_tokens": 260_000}, self.AGENT_ID)],
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": self.AGENT_ID,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_subagent_under_limit_allows(self, hook_script, tmp_path):
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path,
+            self.AGENT_ID,
+            [_subagent_entry({"input_tokens": 1_000}, self.AGENT_ID)],
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": self.AGENT_ID,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_subagent_allowlisted_tool_allowed_even_over_threshold(
+        self, hook_script, tmp_path
+    ):
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path,
+            self.AGENT_ID,
+            [_subagent_entry({"input_tokens": 260_000}, self.AGENT_ID)],
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Write",
+            "agent_id": self.AGENT_ID,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_sidechain_entries_within_subagent_transcript_still_counted(
+        self, hook_script, tmp_path
+    ):
+        """Every entry in a real subagent transcript file is isSidechain,
+        so scanning must key off agentId instead of skipping isSidechain
+        wholesale -- otherwise usage would always resolve to None and the
+        hook would silently fail open for every subagent, unconditionally."""
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path,
+            self.AGENT_ID,
+            [_subagent_entry({"input_tokens": 260_000}, self.AGENT_ID)],
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": self.AGENT_ID,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_subagent_transcript_missing_fails_open(self, hook_script, tmp_path):
+        """agent_id present but no file at the derived subagent path --
+        must fail open, not fall back to scanning the parent transcript
+        (that would check the wrong data: the coordinator's own usage, not
+        the subagent's)."""
+        parent_path = tmp_path / "transcript.jsonl"
+        parent_path.write_text(
+            json.dumps(_assistant_entry({"input_tokens": 999_999})) + "\n"
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": "no-such-agent",
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_subagent_transcript_corrupt_fails_open(self, hook_script, tmp_path):
+        parent_path, subagent_path = _write_subagent_transcript(
+            tmp_path, self.AGENT_ID, []
+        )
+        subagent_path.write_text("not json\n{also not json ]\n")
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": self.AGENT_ID,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_parent_payload_without_agent_id_ignores_subagent_dir(
+        self, hook_script, tmp_path
+    ):
+        """Regression: a normal (non-subagent) payload with no agent_id must
+        keep scanning the parent transcript and skipping sidechain entries,
+        even when a subagents/ dir happens to exist alongside it."""
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path,
+            self.AGENT_ID,
+            [_subagent_entry({"input_tokens": 999_999}, self.AGENT_ID)],
+        )
+        parent_path.write_text(
+            json.dumps(_assistant_entry({"input_tokens": 1_000})) + "\n"
+        )
+        payload = {"transcript_path": str(parent_path), "tool_name": "Bash"}
+        result = _run_hook_with_payload(hook_script, payload, window_tokens=200_000)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_regular_sidechain_entry_in_parent_still_skipped_when_no_agent_id(
+        self, hook_script, tmp_path
+    ):
+        """Regression for the parent-transcript path specifically: an
+        isSidechain entry inside the MAIN transcript (a speculative branch,
+        not a subagent file) must still be skipped when there's no
+        agent_id in the payload."""
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _assistant_entry({"input_tokens": 1000}),
+                _assistant_entry({"input_tokens": 199000}, is_sidechain=True),
+            ],
+        )
+        payload = {"transcript_path": str(transcript), "tool_name": "Bash"}
+        result = _run_hook_with_payload(hook_script, payload, window_tokens=200000)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_empty_string_agent_id_treated_as_absent(self, hook_script, tmp_path):
+        """A falsy-but-not-None agent_id (e.g. "") must be normalized to a
+        real "no subagent" case, not passed through to the scanner as a
+        truthy identity value. Before the fix: main()'s `if agent_id:` gate
+        (truthiness) treated "" as absent and left scan_path as the parent
+        transcript, but `_last_main_chain_usage(scan_path, agent_id="")`
+        was still called with agent_id="" -- the scanner's `if agent_id is
+        None` check (identity) then took the agentId-match branch instead
+        of the sidechain-skip branch, matched nothing in the parent
+        transcript, used stayed None, and the hook silently allowed
+        everything regardless of the parent's real usage."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 190000})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "",
+        }
+        result = _run_hook_with_payload(hook_script, payload, window_tokens=200000)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestSubagentPathTraversalHardening:
+    """Belt-and-suspenders: an agent_id containing path-traversal
+    characters must never reach _subagent_transcript_path at all. This
+    already fails open today as a side effect (the derived path lands
+    somewhere nonexistent or unreadable), but an explicit guard means that
+    isn't accidental -- a suspicious agent_id short-circuits straight to
+    fail-open instead of being used to build a filesystem path."""
+
+    def test_agent_id_with_path_separator_fails_open(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "evil/agent",
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_agent_id_with_dotdot_fails_open(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "../../etc/passwd",
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_well_formed_agent_id_still_works(self, hook_script, tmp_path):
+        """Regression: a normal hex agent_id (no traversal characters) is
+        unaffected by the guard and still resolves/scans its subagent
+        transcript as before."""
+        agent_id = "ad99aa9504d322af6"
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path, agent_id, [_subagent_entry({"input_tokens": 260_000}, agent_id)]
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": agent_id,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"

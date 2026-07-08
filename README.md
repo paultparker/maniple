@@ -255,8 +255,20 @@ The window defaults to 1M tokens, matching current Opus/Sonnet/Fable models
 window at Haiku 4.5's real 200K there instead — under the 300K boundary, so
 Haiku workers pause at 75% of 200K (150K tokens) rather than the flat cap.
 The hook fails open on any error (missing/malformed transcript, missing
-usage data) so it can never break a worker. **Codex workers are excluded** —
-Codex has no hook mechanism, so this feature has no effect there.
+usage data) so it can never break a worker.
+
+**A Task/Agent subagent's own context is bounded too**, by the same step
+function. A PreToolUse payload for a subagent's own tool call carries an
+`agent_id` field; its `transcript_path` still points at the *parent*
+transcript file, not a separate subagent one (verified empirically
+2026-07-08). The hook derives the subagent's real transcript path
+(`<dir>/<parent-stem>/subagents/agent-<agent_id>.jsonl`) and scans it keyed
+on `agentId` instead of skipping sidechain entries — every entry in a
+subagent's own transcript file is marked `isSidechain: true`, so the normal
+skip would otherwise exclude the entire file. A missing or corrupt subagent
+transcript fails open rather than falling back to the parent's usage.
+**Codex workers are excluded** — Codex has no hook mechanism, so this
+feature has no effect there.
 
 ### Usage-Pause (Claude Code workers only)
 

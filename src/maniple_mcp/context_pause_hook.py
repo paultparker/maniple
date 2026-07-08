@@ -10,8 +10,21 @@ may not have this package installed.
 Behavior (see PLAN in the maniple context-pause feature spec):
 - Allowlisted tools (Write, Read, TodoWrite) always pass -- this is the
   "graceful wrap-up" escape hatch so a worker can save a handoff file.
-- Otherwise, scan the transcript JSONL for the LAST main-chain (non
-  sidechain) assistant message with a `message.usage` object and compute
+- If the payload carries an `agent_id` (present only when the hook fires
+  for a Task/Agent subagent's own tool call), the hook bounds the
+  SUBAGENT's own context instead of the parent's: verified empirically
+  (2026-07-08, headless `claude -p` probe) that `transcript_path` in that
+  payload still points at the PARENT transcript file, not a separate
+  subagent one -- the subagent's own transcript lives on disk at
+  `<dir>/<parent-stem>/subagents/agent-<agent_id>.jsonl`, and every entry
+  in it is `isSidechain: true` carrying a matching `agentId`. The hook
+  derives that path and scans it keyed on `agentId` (not the sidechain
+  skip, which would otherwise filter out the entire file). Missing/corrupt
+  subagent transcripts fail open rather than falling back to the parent
+  transcript (that would check the wrong data).
+- Otherwise (no `agent_id`), scan the transcript JSONL for the LAST
+  main-chain (non sidechain) assistant message with a `message.usage`
+  object and compute
   used = input_tokens + cache_read_input_tokens + cache_creation_input_tokens.
 - The effective window is model-aware: if that same message's `model` id
   contains "haiku" (case-insensitive), the window is capped at 200K tokens
@@ -70,9 +83,17 @@ ALLOWLISTED_TOOLS = {"Write", "Read", "TodoWrite"}
 _TAIL_READ_BYTES = 1_000_000
 
 
-def _scan_lines_for_usage(lines):
-    """Return (used, model) from the last non-sidechain assistant message
-    with a usage object among `lines`, or (None, None) if none is found.
+def _scan_lines_for_usage(lines, agent_id=None):
+    """Return (used, model) from the last matching assistant message with a
+    usage object among `lines`, or (None, None) if none is found.
+
+    When `agent_id` is None (a normal main-transcript scan), entries with
+    isSidechain are skipped -- that filter exists to skip speculative
+    branches inside a MAIN transcript. When `agent_id` is given (a
+    subagent's own transcript file), every entry in that file is
+    isSidechain=True by construction, so the sidechain skip would exclude
+    everything; matching on `agentId` is the correct invariant there
+    instead.
 
     `model` is the raw `message.model` string (or None if absent) from that
     same entry -- used by the caller to special-case Haiku's smaller window.
@@ -89,7 +110,10 @@ def _scan_lines_for_usage(lines):
             continue
         if not isinstance(entry, dict):
             continue
-        if entry.get("isSidechain"):
+        if agent_id is None:
+            if entry.get("isSidechain"):
+                continue
+        elif entry.get("agentId") != agent_id:
             continue
         message = entry.get("message")
         if not isinstance(message, dict):
@@ -107,9 +131,10 @@ def _scan_lines_for_usage(lines):
     return used, model
 
 
-def _last_main_chain_usage(transcript_path):
-    """Return (used, model) from the last non-sidechain assistant message
-    with a usage object in the transcript, or (None, None) if not found.
+def _last_main_chain_usage(transcript_path, agent_id=None):
+    """Return (used, model) from the last matching assistant message with a
+    usage object in the transcript, or (None, None) if not found. See
+    `_scan_lines_for_usage` for what `agent_id` changes about the match.
 
     Mirrors the tail-read pattern used elsewhere in maniple for large JSONL
     session files: seek to the last _TAIL_READ_BYTES of the file, discard
@@ -126,7 +151,7 @@ def _last_main_chain_usage(transcript_path):
         tail_bytes = f.read()
 
     tail_lines = tail_bytes.decode("utf-8", errors="replace").splitlines()
-    used, model = _scan_lines_for_usage(tail_lines)
+    used, model = _scan_lines_for_usage(tail_lines, agent_id=agent_id)
     if used is not None or not truncated:
         # Either found in the tail, or the tail read already covered the
         # whole file (nothing more to gain from a fallback scan).
@@ -136,7 +161,20 @@ def _last_main_chain_usage(transcript_path):
     # activity after the last usage-bearing assistant message pushed it out
     # of the tail window). Do a full scan so correctness never regresses.
     with open(transcript_path, "r") as f:
-        return _scan_lines_for_usage(f)
+        return _scan_lines_for_usage(f, agent_id=agent_id)
+
+
+def _subagent_transcript_path(transcript_path, agent_id):
+    """Return the on-disk path of a subagent's own transcript file.
+
+    The PreToolUse payload's `transcript_path` for a subagent's tool call
+    points at the PARENT transcript file, not the subagent's (verified
+    empirically 2026-07-08) -- the real file lives alongside it at
+    `<dir>/<parent-stem>/subagents/agent-<agent_id>.jsonl`.
+    """
+    session_dir = os.path.dirname(transcript_path)
+    stem = os.path.splitext(os.path.basename(transcript_path))[0]
+    return os.path.join(session_dir, stem, "subagents", "agent-{}.jsonl".format(agent_id))
 
 
 # Effective context window for Haiku models, which is smaller than the
@@ -201,8 +239,26 @@ def main(argv):
     if not transcript_path:
         return 0
 
+    agent_id = payload.get("agent_id") or None
+    if agent_id and ("/" in agent_id or os.sep in agent_id or ".." in agent_id):
+        # Belt-and-suspenders: never let an agent_id build a filesystem
+        # path outside the expected subagents/ directory. A value like
+        # this already fails open today (the derived path lands somewhere
+        # nonexistent), but don't rely on that as the only protection.
+        return 0
+
+    scan_path = transcript_path
+    if agent_id:
+        try:
+            subagent_path = _subagent_transcript_path(transcript_path, agent_id)
+            if not os.path.isfile(subagent_path):
+                return 0
+        except OSError:
+            return 0
+        scan_path = subagent_path
+
     try:
-        used, model = _last_main_chain_usage(transcript_path)
+        used, model = _last_main_chain_usage(scan_path, agent_id=agent_id)
     except (OSError, ValueError):
         return 0
 
