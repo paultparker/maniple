@@ -29,6 +29,18 @@ def override_dir(tmp_path):
     return d
 
 
+def _configure_missing_state_file(config_path: Path, tmp_path: Path) -> None:
+    """Point config at a state_file that doesn't exist, so resolve_expires_at
+    falls back to its own now+5h default rather than depending on the real
+    default (/tmp/cc-statusline-input.json), which may or may not exist on
+    the machine running the tests."""
+    config_path.write_text(
+        json.dumps(
+            {"usage_pause": {"state_file": str(tmp_path / "does-not-exist.json")}}
+        )
+    )
+
+
 class TestAdvanceGlobal:
     def test_from_base_advances_to_90(self, override_dir):
         result = usage_override_cli.advance_global(override_dir=override_dir)
@@ -51,14 +63,7 @@ class TestAdvanceGlobal:
     ):
         # No usage_pause.state_file configured -- must not raise, expires_at
         # falls back to now + 5h via resolve_expires_at's own fallback path.
-        # Point state_file at a nonexistent temp path rather than relying on
-        # the real default (/tmp/cc-statusline-input.json), which may or may
-        # not exist on the machine running the tests.
-        config_path.write_text(
-            json.dumps(
-                {"usage_pause": {"state_file": str(tmp_path / "does-not-exist.json")}}
-            )
-        )
+        _configure_missing_state_file(config_path, tmp_path)
         result = usage_override_cli.advance_global(override_dir=override_dir)
         assert result["expires_at"] > time.time()
 
@@ -82,11 +87,7 @@ class TestStatusGlobal:
     def test_status_after_advance_reports_rung_and_expiry(
         self, override_dir, tmp_path, config_path
     ):
-        config_path.write_text(
-            json.dumps(
-                {"usage_pause": {"state_file": str(tmp_path / "does-not-exist.json")}}
-            )
-        )
+        _configure_missing_state_file(config_path, tmp_path)
         usage_override_cli.advance_global(override_dir=override_dir)
         status = usage_override_cli.status_global(override_dir=override_dir)
         assert status["rung"] == 0.90
@@ -95,11 +96,7 @@ class TestStatusGlobal:
     def test_status_unlimited_rung_reported_as_unlimited(
         self, override_dir, tmp_path, config_path
     ):
-        config_path.write_text(
-            json.dumps(
-                {"usage_pause": {"state_file": str(tmp_path / "does-not-exist.json")}}
-            )
-        )
+        _configure_missing_state_file(config_path, tmp_path)
         usage_override_cli.advance_global(override_dir=override_dir)
         usage_override_cli.advance_global(override_dir=override_dir)
         usage_override_cli.advance_global(override_dir=override_dir)
@@ -122,10 +119,6 @@ class TestStatusGlobal:
     def test_status_missing_state_file_reports_none_used_percentage(
         self, override_dir, tmp_path, config_path
     ):
-        config_path.write_text(
-            json.dumps(
-                {"usage_pause": {"state_file": str(tmp_path / "does-not-exist.json")}}
-            )
-        )
+        _configure_missing_state_file(config_path, tmp_path)
         status = usage_override_cli.status_global(override_dir=override_dir)
         assert status["used_percentage"] is None

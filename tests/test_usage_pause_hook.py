@@ -158,18 +158,14 @@ class TestResetsAt:
         reason = output["hookSpecificOutput"]["permissionDecisionReason"]
         assert any(f"{h:02d}:" in reason for h in range(24))
 
-    def test_resets_at_garbage_still_denies_without_crashing(self, hook_script, tmp_path):
+    @pytest.mark.parametrize(
+        "resets_at",
+        ["not-a-number", 1e20],
+        ids=["garbage", "out_of_range"],
+    )
+    def test_bad_resets_at_still_denies_without_crashing(self, hook_script, tmp_path, resets_at):
         state_file = _write_state_file(
-            tmp_path, _rate_limits_payload(90.0, resets_at="not-a-number")
-        )
-        result = _run_hook(hook_script, "Bash", state_file=state_file, threshold=0.75)
-        assert result.returncode == 0
-        output = json.loads(result.stdout)
-        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-    def test_resets_at_out_of_range_still_denies_without_crashing(self, hook_script, tmp_path):
-        state_file = _write_state_file(
-            tmp_path, _rate_limits_payload(90.0, resets_at=1e20)
+            tmp_path, _rate_limits_payload(90.0, resets_at=resets_at)
         )
         result = _run_hook(hook_script, "Bash", state_file=state_file, threshold=0.75)
         assert result.returncode == 0
@@ -431,41 +427,25 @@ class TestAntiLoophole:
     directly into the override directory -- checked BEFORE the normal
     allowlist (which would otherwise let Write/Edit through)."""
 
-    def test_write_into_override_dir_denied_even_under_threshold(self, hook_script, tmp_path):
+    @pytest.mark.parametrize(
+        "tool_name, field, filename",
+        [
+            ("Write", "file_path", "w1.json"),
+            ("Edit", "file_path", "w1.json"),
+            ("NotebookEdit", "notebook_path", "w1.ipynb"),
+        ],
+    )
+    def test_write_capable_tool_into_override_dir_denied(
+        self, hook_script, tmp_path, tool_name, field, filename
+    ):
         override_dir = tmp_path / "overrides"
         override_dir.mkdir()
         state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))  # far under threshold
-        target = override_dir / "w1.json"
+        target = override_dir / filename
         result = _run_hook(
-            hook_script, "Write", state_file=state_file, threshold=0.75,
+            hook_script, tool_name, state_file=state_file, threshold=0.75,
             scope="w1", override_dir=override_dir,
-            tool_input={"file_path": str(target)},
-        )
-        output = json.loads(result.stdout)
-        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-    def test_edit_into_override_dir_denied(self, hook_script, tmp_path):
-        override_dir = tmp_path / "overrides"
-        override_dir.mkdir()
-        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))
-        target = override_dir / "w1.json"
-        result = _run_hook(
-            hook_script, "Edit", state_file=state_file, threshold=0.75,
-            scope="w1", override_dir=override_dir,
-            tool_input={"file_path": str(target)},
-        )
-        output = json.loads(result.stdout)
-        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-    def test_notebook_edit_into_override_dir_denied(self, hook_script, tmp_path):
-        override_dir = tmp_path / "overrides"
-        override_dir.mkdir()
-        state_file = _write_state_file(tmp_path, _rate_limits_payload(1.0))
-        target = override_dir / "w1.ipynb"
-        result = _run_hook(
-            hook_script, "NotebookEdit", state_file=state_file, threshold=0.75,
-            scope="w1", override_dir=override_dir,
-            tool_input={"notebook_path": str(target)},
+            tool_input={field: str(target)},
         )
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"

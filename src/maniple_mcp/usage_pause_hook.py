@@ -48,10 +48,15 @@ Behavior:
 
 from __future__ import annotations
 
+from ._hook_script_shared import FAIL_OPEN_MAIN_BLOCK
+
 HOOK_SCRIPT_FILENAME = "usage_pause_hook.py"
 
 # Tools that remain allowed even once a worker is over the usage-pause
 # threshold, so it can still write a brief handoff before ending its turn.
+# Exposed for tests; also duplicated verbatim *inside* the emitted script's
+# own ALLOWLISTED_TOOLS set below, since the running script can't import
+# this module.
 ALLOWLISTED_TOOLS = ("Write", "Read", "TodoWrite")
 
 # Write-capable tools checked by the anti-loophole guard, and the tool_input
@@ -64,7 +69,7 @@ _ANTI_LOOPHOLE_PATH_FIELDS = {
 }
 
 
-_HOOK_SCRIPT_SOURCE = '''#!/usr/bin/env python3
+_HOOK_SCRIPT_BODY = '''#!/usr/bin/env python3
 """Maniple usage-pause PreToolUse hook (auto-generated, stdlib only).
 
 Blocks a worker's tool calls once the ACCOUNT's rolling 5-hour usage window
@@ -285,13 +290,9 @@ def main(argv):
     return 0
 
 
-if __name__ == "__main__":
-    try:
-        sys.exit(main(sys.argv[1:]))
-    except Exception:
-        # Absolute last resort: never let an unexpected error block a worker.
-        sys.exit(0)
 '''
+
+_HOOK_SCRIPT_SOURCE = _HOOK_SCRIPT_BODY + FAIL_OPEN_MAIN_BLOCK
 
 
 def render_hook_script() -> str:

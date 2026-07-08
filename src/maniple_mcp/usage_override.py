@@ -41,27 +41,25 @@ def _override_path(scope: str, override_dir: Path | None) -> Path:
     return d / f"{scope}.json"
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write `data` as JSON to `path` atomically (temp file + os.replace).
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to `path` atomically (temp file + os.replace).
 
     Mirrors iterm_utils._write_if_changed's temp-file pattern, but always
-    writes (no content-diffing) since override payloads always carry a
-    fresh `expires_at` timestamp.
+    writes (no content-diffing) since callers here always have fresh
+    content to persist (an override's `expires_at`, or the rendered hook
+    script).
     """
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    tmp_path.write_text(json.dumps(data))
-    os.replace(tmp_path, path)
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Write `content` to `path` atomically (temp file + os.replace)."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     tmp_path.write_text(content)
     os.replace(tmp_path, path)
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write `data` as JSON to `path` atomically (temp file + os.replace)."""
+
+    _atomic_write_text(path, json.dumps(data))
 
 
 def read_override(scope: str, override_dir: Path | None = None) -> dict | None:
@@ -153,19 +151,27 @@ def _load_state_file(state_file: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _five_hour_rate_limits(state_file: str) -> dict | None:
+    """Return the `rate_limits.five_hour` dict from `state_file`, or None if
+    the file/JSON/either level is unreadable, malformed, or wrong-typed."""
+
+    data = _load_state_file(state_file)
+    if data is None:
+        return None
+    rate_limits = data.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+    five_hour = rate_limits.get("five_hour")
+    return five_hour if isinstance(five_hour, dict) else None
+
+
 def resolve_expires_at(state_file: str) -> float:
     """Return `rate_limits.five_hour.resets_at` from `state_file`, falling
     back to `now + 5h` if unreadable, malformed, or missing."""
 
     fallback = time.time() + 5 * 3600
-    data = _load_state_file(state_file)
-    if data is None:
-        return fallback
-    rate_limits = data.get("rate_limits")
-    if not isinstance(rate_limits, dict):
-        return fallback
-    five_hour = rate_limits.get("five_hour")
-    if not isinstance(five_hour, dict):
+    five_hour = _five_hour_rate_limits(state_file)
+    if five_hour is None:
         return fallback
     resets_at = five_hour.get("resets_at")
     if not isinstance(resets_at, (int, float)) or isinstance(resets_at, bool):
@@ -177,14 +183,8 @@ def read_used_percentage(state_file: str) -> float | None:
     """Return `rate_limits.five_hour.used_percentage` from `state_file`, or
     None if unreadable, malformed, or missing."""
 
-    data = _load_state_file(state_file)
-    if data is None:
-        return None
-    rate_limits = data.get("rate_limits")
-    if not isinstance(rate_limits, dict):
-        return None
-    five_hour = rate_limits.get("five_hour")
-    if not isinstance(five_hour, dict):
+    five_hour = _five_hour_rate_limits(state_file)
+    if five_hour is None:
         return None
     used = five_hour.get("used_percentage")
     if not isinstance(used, (int, float)) or isinstance(used, bool):
