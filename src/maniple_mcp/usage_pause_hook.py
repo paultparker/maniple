@@ -48,9 +48,16 @@ Behavior:
 
 from __future__ import annotations
 
-from ._hook_script_shared import ALLOWLISTED_TOOLS, FAIL_OPEN_MAIN_BLOCK
+from ._hook_script_shared import FAIL_OPEN_MAIN_BLOCK
 
 HOOK_SCRIPT_FILENAME = "usage_pause_hook.py"
+
+# Tools that remain allowed even once a worker is over the usage-pause
+# threshold, so it can still write a brief handoff before ending its turn.
+# Exposed for tests; also duplicated verbatim *inside* the emitted script's
+# own ALLOWLISTED_TOOLS set below, since the running script can't import
+# this module.
+ALLOWLISTED_TOOLS = ("Write", "Read", "TodoWrite")
 
 # Write-capable tools checked by the anti-loophole guard, and the tool_input
 # field each one uses for its target path.
