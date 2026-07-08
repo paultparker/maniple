@@ -247,7 +247,10 @@ will pick up from there.
 ~{usage_threshold_percent}%, your tool calls will be blocked automatically
 (except Write/Read/TodoWrite) so you can still save a brief handoff. If that
 happens, write a short handoff file (current state, what's done, next steps)
-and end your turn — the coordinator will pick up from there.
+and end your turn — the coordinator will pick up from there. The coordinator
+can grant you a continue past this threshold (an escalating override ladder)
+via the `override_usage_pause` tool, but only with the user's explicit permission
+for that specific continue — it will not do this on its own judgment.
 """
 
     # Closing/assignment section - 4 cases based on issue_id and custom_prompt

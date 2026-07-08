@@ -192,6 +192,16 @@ class TestUsagePauseHeadsUp:
         assert "Context-window heads-up" in prompt
         assert "Plan usage heads-up" in prompt
 
+    def test_claude_prompt_mentions_override_tool_with_explicit_permission_contract(
+        self,
+    ):
+        """The heads-up must name override_usage_pause and the user-approval
+        contract -- the coordinator must never grant a continue on its own
+        judgment."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "override_usage_pause" in prompt
+        assert "explicit permission" in prompt or "explicit approval" in prompt
+
 
 class TestGetCoordinatorGuidance:
     """Tests for get_coordinator_guidance function."""
