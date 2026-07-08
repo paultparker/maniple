@@ -243,8 +243,9 @@ this feature has no effect there.
 Sibling to context-pause, but for the **account's rolling 5-hour usage
 window** — the Claude plan's session credit quota — instead of context. A
 second PreToolUse hook (same allowlist/fail-open semantics) blocks tool
-calls once `rate_limits.five_hour.used_percentage` crosses
-`usage_pause.threshold`. Dependencies to be aware of:
+calls once `rate_limits.five_hour.used_percentage` crosses an **escalating
+override ladder** that starts at `usage_pause.threshold`. Dependencies to be
+aware of:
 
 - **Requires the statusline to cache its stdin JSON.** Hooks don't receive
   `rate_limits` natively — only Claude Code's statusline command does (a
@@ -258,6 +259,55 @@ calls once `rate_limits.five_hour.used_percentage` crosses
   statusline payload for Pro/Max subscriptions — under API-key auth it's
   simply absent, so this feature silently no-ops (fails open) there too.
 - **Codex workers are excluded** — Codex has no hook mechanism.
+
+#### Escalating override ladder
+
+A paused session (worker or the global hook) can be granted a **continue**
+that climbs one rung at a time, expiring when the account's 5-hour window
+resets:
+
+| Scope | base (default) | rung 1 | rung 2 | rung 3 |
+|-------|-----------------|--------|--------|--------|
+| Worker | 75% | 90% | 95% | unlimited |
+| Global | 80% | 90% | 95% | unlimited |
+
+Override files live at `~/.maniple/usage_override/<scope>.json` (scope is a
+worker's `session_id`, or the literal `"global"`). A worker cannot grant
+itself an override — the hook denies any `Write`/`Edit`/`MultiEdit`/
+`NotebookEdit` call that targets a path inside that directory, regardless of
+usage level.
+
+**MCP tools** (coordinator-facing, registered on the maniple MCP server):
+
+- `override_usage_pause(workers: list[str])` — advances each listed worker
+  one rung up the ladder. ⚠️ **The coordinator may only call this after the
+  human user has given explicit permission for that specific continue, in
+  that session** — never on its own judgment, even if a worker looks close
+  to finishing. When a worker pauses, the coordinator should relay the pause
+  to the user and ask first. Calling it again on an already-unlimited
+  worker is safe (reports `already_unlimited` instead of erroring).
+- `clear_usage_override(workers: list[str])` — reverts listed workers (or
+  the literal `"global"`) back to the base threshold. No approval gate —
+  tightening back to the safe default doesn't need one.
+
+**CLI subcommands** (operate on the *global* scope only):
+
+- `maniple usage-override` — advance the global rung one step (no args), or
+  inspect/reset it: `--status` prints the current rung, live
+  `used_percentage`, and expiry; `--clear` reverts to base.
+- `maniple install-global-usage-guard [--threshold 0.80]` — writes the
+  rendered hook script to `~/.claude/hooks/usage-pause-global.py` and
+  **prints** (never writes) the exact `PreToolUse` hooks JSON snippet to
+  merge by hand into `~/.claude/settings.json`, using `scope="global"`. This
+  installs a guard for *all* Claude Code sessions on the machine, not just
+  maniple workers — useful for protecting your own interactive usage. It
+  never touches `settings.json` itself.
+
+**Global hook vs. worker hooks:** a globally-installed hook must not
+double-pause a maniple worker, which already carries its own scoped hook —
+the generated script checks `os.environ.get("MANIPLE_WORKER")` (set on every
+worker launch, both backends) and no-ops immediately when `scope ==
+"global"` and that env var is present.
 
 ## Environment Variables
 
