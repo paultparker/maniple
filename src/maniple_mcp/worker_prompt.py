@@ -55,6 +55,29 @@ def _context_pause_threshold_percent() -> Optional[int]:
     return round(context_pause.threshold * 100)
 
 
+def _context_pause_max_tokens() -> Optional[int]:
+    """Return the configured context-pause absolute token cap.
+
+    Sibling accessor to _context_pause_threshold_percent() -- the actual
+    pause point is min(threshold * window, max_tokens), so the heads-up
+    paragraph needs both numbers to describe the real effective limit
+    (on large windows the token cap binds well before the raw threshold
+    fraction would). Returns None if context_pause is disabled or config
+    can't be read; the caller should omit the heads-up paragraph entirely
+    in that case (mirrors _context_pause_threshold_percent()).
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return context_pause.max_tokens
+
+
 def _usage_pause_threshold_percent() -> Optional[int]:
     """Return the configured usage-pause threshold as a whole percent.
 
@@ -226,10 +249,15 @@ def _generate_claude_worker_prompt(
 
     # Context-pause heads-up (Claude only -- Codex has no hook mechanism).
     # Omitted entirely if context_pause is disabled or config can't be read.
+    # The actual pause point is min(threshold * window, max_tokens) -- on
+    # today's 1M-token windows the absolute cap binds well before the raw
+    # threshold fraction would, so both numbers are named here.
     threshold_percent = _context_pause_threshold_percent()
     if threshold_percent is not None:
+        max_tokens = _context_pause_max_tokens()
         extra_sections += f"""
-**Context-window heads-up:** once your context usage hits ~{threshold_percent}%,
+**Context-window heads-up:** once your context usage hits ~{threshold_percent}%
+of your context window (capped at {max_tokens:,} tokens, whichever is lower),
 your tool calls will be blocked automatically (except Write/Read/TodoWrite) so
 you can still save a brief handoff. If that happens, write a short handoff file
 (current state, what's done, next steps) and end your turn — the coordinator

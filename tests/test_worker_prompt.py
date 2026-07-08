@@ -141,6 +141,20 @@ class TestContextPauseHeadsUp:
         prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
         assert "~60%" in prompt
 
+    def test_claude_prompt_mentions_default_max_tokens_cap(self):
+        """With no config file, the default 250,000-token cap is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "250,000" in prompt
+
+    def test_claude_prompt_uses_configured_max_tokens(self):
+        """A custom configured max_tokens is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"max_tokens": 100000}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "100,000" in prompt
+        assert "250,000" not in prompt
+
     def test_claude_prompt_omits_heads_up_when_disabled(self):
         """No heads-up paragraph is included when context_pause is disabled."""
         config_module.CONFIG_PATH.write_text(
