@@ -100,29 +100,19 @@ class TestInstallGlobalUsageGuardSubcommand:
         out = capsys.readouterr().out
         assert "0.65" in out
 
-    def test_threshold_of_80_rejected_not_silently_8000_percent(
-        self, monkeypatch, capsys
-    ):
-        """`--threshold 80` (a plausible typo for "80%") must be rejected,
-        not silently accepted as a nonsensical 8000% threshold -- mirrors
-        config.py's context_pause/usage_pause threshold validation, which
-        already requires 0 < t < 1."""
+    @pytest.mark.parametrize(
+        "value",
+        ["80", "0", "1", "-0.1"],
+        ids=["typo_80_not_8000_percent", "zero", "one", "negative"],
+    )
+    def test_out_of_range_threshold_rejected(self, monkeypatch, capsys, value):
+        """`--threshold 80` (a plausible typo for "80%") and other values
+        outside (0, 1) must be rejected, not silently accepted -- mirrors
+        config.py's context_pause/usage_pause threshold validation."""
         with pytest.raises(SystemExit):
-            _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", "80"])
+            _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", value])
         err = capsys.readouterr().err
         assert "threshold" in err.lower()
-
-    def test_threshold_zero_rejected(self, monkeypatch, capsys):
-        with pytest.raises(SystemExit):
-            _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", "0"])
-
-    def test_threshold_one_rejected(self, monkeypatch, capsys):
-        with pytest.raises(SystemExit):
-            _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", "1"])
-
-    def test_threshold_negative_rejected(self, monkeypatch, capsys):
-        with pytest.raises(SystemExit):
-            _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", "-0.1"])
 
     def test_threshold_within_range_still_accepted(self, monkeypatch, capsys, fake_home):
         _run_main(monkeypatch, ["install-global-usage-guard", "--threshold", "0.5"])
