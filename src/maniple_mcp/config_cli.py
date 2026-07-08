@@ -331,6 +331,11 @@ _FIELD_PARSERS: dict[str, Callable[[str, str], object]] = {
         field,
         1000,
     ),
+    "context_pause.max_tokens": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1000,
+    ),
     "usage_pause.enabled": _parse_bool,
     "usage_pause.threshold": _parse_open_unit_float,
     "usage_pause.state_file": _parse_nonempty_string,

@@ -78,9 +78,17 @@ class ContextPauseConfig:
 
     Governs the PreToolUse hook (injected via build_stop_hook_settings_file
     in iterm_utils.py) that blocks a Claude Code worker's tool calls once its
-    context usage crosses `threshold`, so it can only write a handoff (via
-    the hook's tool allowlist) before ending its turn. Codex workers have no
-    hook mechanism and are unaffected.
+    context usage crosses the effective limit, so it can only write a
+    handoff (via the hook's tool allowlist) before ending its turn. Codex
+    workers have no hook mechanism and are unaffected.
+
+    The effective limit is `min(threshold * window, max_tokens)` -- a flat
+    `threshold` fraction of the window is too generous on today's 1M-token
+    windows (75% would be 750K tokens, far past the point a worker can
+    still usefully write a handoff), so `max_tokens` caps the absolute
+    token count regardless of window size. On a 1M+ window this yields a
+    250K-token pause point; on Haiku's real 200K window (see below) it
+    yields 150K (75% of 200K, since that's below the 250K cap).
 
     `window_tokens` should match the worker's model's context window. As of
     the 2026-07 model catalog, current Opus (4.8/4.7/4.6), Sonnet (5/4.6),
@@ -94,6 +102,7 @@ class ContextPauseConfig:
     enabled: bool = True
     threshold: float = 0.75
     window_tokens: int = 1_000_000
+    max_tokens: int = 250_000
 
 
 @dataclass
@@ -362,7 +371,9 @@ def _parse_issue_tracker(value: object) -> IssueTrackerConfig:
 def _parse_context_pause(value: object) -> ContextPauseConfig:
     # Parse worker context-window pause thresholds.
     data = _ensure_dict(value, "context_pause")
-    _validate_keys(data, {"enabled", "threshold", "window_tokens"}, "context_pause")
+    _validate_keys(
+        data, {"enabled", "threshold", "window_tokens", "max_tokens"}, "context_pause"
+    )
     return ContextPauseConfig(
         enabled=_optional_bool(
             data.get("enabled"),
@@ -378,6 +389,12 @@ def _parse_context_pause(value: object) -> ContextPauseConfig:
             data.get("window_tokens"),
             "context_pause.window_tokens",
             ContextPauseConfig.window_tokens,
+            min_value=1000,
+        ),
+        max_tokens=_optional_int(
+            data.get("max_tokens"),
+            "context_pause.max_tokens",
+            ContextPauseConfig.max_tokens,
             min_value=1000,
         ),
     )

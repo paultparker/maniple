@@ -132,6 +132,17 @@ class TestConfigSet:
         config = load_config()
         assert config.context_pause.window_tokens == 50000
 
+    def test_set_context_pause_max_tokens(self, config_path: Path):
+        """set_config_value persists context_pause.max_tokens."""
+        set_config_value("context_pause.max_tokens", "100000")
+        config = load_config()
+        assert config.context_pause.max_tokens == 100000
+
+    def test_set_context_pause_max_tokens_below_minimum_rejected(self, config_path: Path):
+        """set_config_value rejects a max_tokens below the minimum."""
+        with pytest.raises(ConfigError, match="context_pause.max_tokens must be at least"):
+            set_config_value("context_pause.max_tokens", "999")
+
     def test_set_usage_pause_enabled(self, config_path: Path):
         """set_config_value persists usage_pause.enabled."""
         set_config_value("usage_pause.enabled", "false")
@@ -181,6 +192,14 @@ class TestConfigSet:
             "context_pause": {"threshold": 0.6},
         }))
         assert get_config_value("context_pause.threshold") == 0.6
+
+    def test_get_context_pause_max_tokens(self, config_path: Path):
+        """get_config_value returns context_pause.max_tokens."""
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"max_tokens": 100000},
+        }))
+        assert get_config_value("context_pause.max_tokens") == 100000
 
 
 class TestStaleThresholdEnvOverride:
