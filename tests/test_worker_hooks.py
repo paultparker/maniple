@@ -84,6 +84,7 @@ class TestContextPauseHookInjection:
         command = matches[0]
         assert "0.75" in command
         assert "1000000" in command
+        assert "250000" in command
 
     def test_context_pause_hook_writes_standalone_script(self):
         """The hook script file itself is written to the settings dir and
@@ -141,6 +142,26 @@ class TestContextPauseHookInjection:
         command = matches[0]
         assert "0.6" in command
         assert "50000" in command
+
+    def test_context_pause_hook_uses_configured_max_tokens(self, tmp_path):
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({
+                "context_pause": {
+                    "enabled": True,
+                    "threshold": 0.75,
+                    "window_tokens": 1_000_000,
+                    "max_tokens": 100000,
+                }
+            })
+        )
+
+        path = build_stop_hook_settings_file("cp-max-tokens")
+        settings = json.loads(Path(path).read_text())
+
+        matches = [c for c in _matcherless_commands(settings) if "context_pause_hook.py" in c]
+        assert len(matches) == 1
+        command = matches[0]
+        assert "100000" in command
 
     def test_context_pause_hook_quotes_script_path(self):
         """The hook script path is shell-quoted (via shlex.quote) so paths
