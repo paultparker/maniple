@@ -135,8 +135,15 @@ class AgentCLI(Protocol):
         if args:
             cmd = f"{cmd} {' '.join(args)}"
 
-        if env_vars:
-            env_exports = " ".join(f"{k}={v}" for k, v in env_vars.items())
-            cmd = f"{env_exports} {cmd}"
+        # Always mark worker launches with MANIPLE_WORKER=1 -- this is the
+        # single choke point both terminal backends (tmux, iTerm) funnel
+        # through, so it covers both without per-backend duplication
+        # (backend-parity policy). Consumed by the usage-pause hook so a
+        # globally-installed hook can no-op inside maniple workers, which
+        # already carry their own scoped hook. Wins over any caller-supplied
+        # MANIPLE_WORKER in env_vars -- it's an invariant, not a preference.
+        merged_env = {**(env_vars or {}), "MANIPLE_WORKER": "1"}
+        env_exports = " ".join(f"{k}={v}" for k, v in merged_env.items())
+        cmd = f"{env_exports} {cmd}"
 
         return cmd

@@ -161,13 +161,15 @@ class TestClaudeCLI:
             assert cli.supports_settings_file() is False
 
     def test_build_full_command_simple(self):
-        """build_full_command should combine command and args."""
+        """build_full_command should combine command and args, always
+        prefixed with MANIPLE_WORKER=1 (see test_build_full_command_
+        always_sets_maniple_worker_env for the dedicated marker test)."""
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("MANIPLE_COMMAND", None)
             os.environ.pop("CLAUDE_TEAM_COMMAND", None)
             cli = ClaudeCLI()
             cmd = cli.build_full_command(dangerously_skip_permissions=True)
-            assert cmd == "claude --dangerously-skip-permissions"
+            assert cmd == "MANIPLE_WORKER=1 claude --dangerously-skip-permissions"
 
     def test_build_full_command_with_env_vars(self):
         """build_full_command should prepend env vars."""
@@ -179,6 +181,30 @@ class TestClaudeCLI:
             assert "FOO=bar" in cmd
             assert "BAZ=qux" in cmd
             assert cmd.endswith("claude")
+
+    def test_build_full_command_always_sets_maniple_worker_env(self):
+        """Every worker launch is marked with MANIPLE_WORKER=1 -- both
+        terminal backends funnel through build_full_command, so this is the
+        single choke point that guarantees the marker for both (backend
+        parity). Present even with no explicit env_vars, and not
+        overridable by caller-supplied env_vars."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("MANIPLE_COMMAND", None)
+            os.environ.pop("CLAUDE_TEAM_COMMAND", None)
+            cli = ClaudeCLI()
+
+            cmd_no_env = cli.build_full_command()
+            assert "MANIPLE_WORKER=1" in cmd_no_env
+
+            cmd_with_env = cli.build_full_command(env_vars={"FOO": "bar"})
+            assert "MANIPLE_WORKER=1" in cmd_with_env
+            assert "FOO=bar" in cmd_with_env
+
+            cmd_attempted_override = cli.build_full_command(
+                env_vars={"MANIPLE_WORKER": "0"}
+            )
+            assert "MANIPLE_WORKER=1" in cmd_attempted_override
+            assert "MANIPLE_WORKER=0" not in cmd_attempted_override
 
 
 class TestCodexCLI:
@@ -284,13 +310,14 @@ class TestCodexCLI:
         assert cli.supports_settings_file() is False
 
     def test_build_full_command_simple(self):
-        """build_full_command should return just 'codex' for defaults."""
+        """build_full_command should return 'codex', prefixed with
+        MANIPLE_WORKER=1 (backend-parity marker, see AgentCLI base)."""
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("MANIPLE_CODEX_COMMAND", None)
             os.environ.pop("CLAUDE_TEAM_CODEX_COMMAND", None)
             cli = CodexCLI()
             cmd = cli.build_full_command()
-            assert cmd == "codex"
+            assert cmd == "MANIPLE_WORKER=1 codex"
 
     def test_build_full_command_with_bypass_approvals(self):
         """build_full_command should add --dangerously-bypass-approvals-and-sandbox."""
@@ -299,14 +326,14 @@ class TestCodexCLI:
             os.environ.pop("CLAUDE_TEAM_CODEX_COMMAND", None)
             cli = CodexCLI()
             cmd = cli.build_full_command(dangerously_skip_permissions=True)
-            assert cmd == "codex --dangerously-bypass-approvals-and-sandbox"
+            assert cmd == "MANIPLE_WORKER=1 codex --dangerously-bypass-approvals-and-sandbox"
 
     def test_build_full_command_with_env_var(self):
         """build_full_command should use MANIPLE_CODEX_COMMAND."""
         with patch.dict(os.environ, {"MANIPLE_CODEX_COMMAND": "happy codex"}):
             cli = CodexCLI()
             cmd = cli.build_full_command(dangerously_skip_permissions=True)
-            assert cmd == "happy codex --dangerously-bypass-approvals-and-sandbox"
+            assert cmd == "MANIPLE_WORKER=1 happy codex --dangerously-bypass-approvals-and-sandbox"
 
 
 class TestGetCliBackend:

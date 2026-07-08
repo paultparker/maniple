@@ -73,6 +73,72 @@ class IssueTrackerConfig:
 
 
 @dataclass
+class ContextPauseConfig:
+    """Worker context-window pause thresholds.
+
+    Governs the PreToolUse hook (injected via build_stop_hook_settings_file
+    in iterm_utils.py) that blocks a Claude Code worker's tool calls once its
+    context usage crosses the effective limit, so it can only write a
+    handoff (via the hook's tool allowlist) before ending its turn. Codex
+    workers have no hook mechanism and are unaffected.
+
+    The effective limit is a step function of the (Haiku-adjusted) effective
+    window, not a flat `threshold` fraction of it:
+    - If the effective window is >= `large_window_tokens` (default 300K),
+      the window counts as "large" and the flat `max_tokens` cap applies
+      (default 250K) -- `threshold` does not apply at all in this regime.
+      A flat 75% of a 1M-token window would be 750K tokens, far past the
+      point a worker can still usefully write a handoff, so large windows
+      always pause at exactly `max_tokens`.
+    - Otherwise (effective window < `large_window_tokens`), the window
+      counts as "small" and `threshold * window` controls instead -- e.g.
+      Haiku's real 200K window (see below) is under the 300K boundary, so
+      it pauses at 75% = 150K, not the flat 250K cap.
+
+    `window_tokens` should match the worker's model's context window. As of
+    the 2026-07 model catalog, current Opus (4.8/4.7/4.6), Sonnet (5/4.6),
+    and Fable (5) models default to a 1M-token context window -- only Haiku
+    4.5 is smaller (200K). The default here is 1M; the hook script itself
+    (context_pause_hook.py) additionally caps the effective window at 200K
+    when it detects a Haiku model in the transcript, so this single config
+    value is correct for a mixed-model team without a full model map.
+    """
+
+    enabled: bool = True
+    threshold: float = 0.75
+    window_tokens: int = 1_000_000
+    max_tokens: int = 250_000
+    large_window_tokens: int = 300_000
+
+
+@dataclass
+class UsagePauseConfig:
+    """Account 5-hour usage-window (plan credit quota) pause thresholds.
+
+    Sibling to ContextPauseConfig: governs a second PreToolUse hook (injected
+    via build_stop_hook_settings_file in iterm_utils.py) that blocks a Claude
+    Code worker's tool calls once the ACCOUNT's rolling 5-hour usage window
+    crosses `threshold` -- this is the Claude plan's session credit quota,
+    not context usage. Claude Code's statusline stdin JSON carries
+    `rate_limits.five_hour.used_percentage`; hooks don't receive rate_limits
+    natively, so the hook script reads it from `state_file`, which the
+    user's statusline command must cache its full stdin JSON to on every
+    update (workers inherit that statusline, so the file stays fresh while
+    any session works).
+
+    `rate_limits` is only present in the statusline payload for Pro/Max
+    OAuth logins -- under API-key auth it's simply absent, so the hook
+    fails open (no-ops) there too. Codex workers have no hook mechanism and
+    are unaffected.
+    """
+
+    enabled: bool = True
+    threshold: float = 0.75
+    state_file: str = "/tmp/cc-statusline-input.json"
+    max_stale_seconds: int = 600
+
+
+@dataclass
 class ClaudeTeamConfig:
     """Top-level configuration container for claude-team."""
 
@@ -82,6 +148,8 @@ class ClaudeTeamConfig:
     terminal: TerminalConfig = field(default_factory=TerminalConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     issue_tracker: IssueTrackerConfig = field(default_factory=IssueTrackerConfig)
+    context_pause: ContextPauseConfig = field(default_factory=ContextPauseConfig)
+    usage_pause: UsagePauseConfig = field(default_factory=UsagePauseConfig)
 
 
 def default_config() -> ClaudeTeamConfig:
@@ -160,7 +228,16 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     # Validate expected top-level keys before parsing sections.
     _validate_keys(
         data,
-        {"version", "commands", "defaults", "terminal", "events", "issue_tracker"},
+        {
+            "version",
+            "commands",
+            "defaults",
+            "terminal",
+            "events",
+            "issue_tracker",
+            "context_pause",
+            "usage_pause",
+        },
         "config",
     )
     version = _read_version(data.get("version"))
@@ -169,6 +246,8 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     terminal = _parse_terminal(data.get("terminal"))
     events = _parse_events(data.get("events"))
     issue_tracker = _parse_issue_tracker(data.get("issue_tracker"))
+    context_pause = _parse_context_pause(data.get("context_pause"))
+    usage_pause = _parse_usage_pause(data.get("usage_pause"))
     return ClaudeTeamConfig(
         version=version,
         commands=commands,
@@ -176,6 +255,8 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
         terminal=terminal,
         events=events,
         issue_tracker=issue_tracker,
+        context_pause=context_pause,
+        usage_pause=usage_pause,
     )
 
 
@@ -293,6 +374,77 @@ def _parse_issue_tracker(value: object) -> IssueTrackerConfig:
     )
 
 
+def _parse_context_pause(value: object) -> ContextPauseConfig:
+    # Parse worker context-window pause thresholds.
+    data = _ensure_dict(value, "context_pause")
+    _validate_keys(
+        data,
+        {"enabled", "threshold", "window_tokens", "max_tokens", "large_window_tokens"},
+        "context_pause",
+    )
+    return ContextPauseConfig(
+        enabled=_optional_bool(
+            data.get("enabled"),
+            "context_pause.enabled",
+            ContextPauseConfig.enabled,
+        ),
+        threshold=_optional_float(
+            data.get("threshold"),
+            "context_pause.threshold",
+            ContextPauseConfig.threshold,
+        ),
+        window_tokens=_optional_int(
+            data.get("window_tokens"),
+            "context_pause.window_tokens",
+            ContextPauseConfig.window_tokens,
+            min_value=1000,
+        ),
+        max_tokens=_optional_int(
+            data.get("max_tokens"),
+            "context_pause.max_tokens",
+            ContextPauseConfig.max_tokens,
+            min_value=1000,
+        ),
+        large_window_tokens=_optional_int(
+            data.get("large_window_tokens"),
+            "context_pause.large_window_tokens",
+            ContextPauseConfig.large_window_tokens,
+            min_value=1000,
+        ),
+    )
+
+
+def _parse_usage_pause(value: object) -> UsagePauseConfig:
+    # Parse account 5-hour usage-window pause thresholds.
+    data = _ensure_dict(value, "usage_pause")
+    _validate_keys(
+        data, {"enabled", "threshold", "state_file", "max_stale_seconds"}, "usage_pause"
+    )
+    return UsagePauseConfig(
+        enabled=_optional_bool(
+            data.get("enabled"),
+            "usage_pause.enabled",
+            UsagePauseConfig.enabled,
+        ),
+        threshold=_optional_float(
+            data.get("threshold"),
+            "usage_pause.threshold",
+            UsagePauseConfig.threshold,
+        ),
+        state_file=_optional_nonempty_str(
+            data.get("state_file"),
+            "usage_pause.state_file",
+            UsagePauseConfig.state_file,
+        ),
+        max_stale_seconds=_optional_int(
+            data.get("max_stale_seconds"),
+            "usage_pause.max_stale_seconds",
+            UsagePauseConfig.max_stale_seconds,
+            min_value=1,
+        ),
+    )
+
+
 def _ensure_dict(value: object, path: str) -> dict:
     # Ensure sections are JSON objects, defaulting to empty dicts.
     if value is None:
@@ -321,6 +473,18 @@ def _optional_str(value: object, path: str) -> str | None:
     return value
 
 
+def _optional_nonempty_str(value: object, path: str, default: str) -> str:
+    # Validate optional string fields that default to a non-empty string
+    # (unlike _optional_str, missing values fall back to `default`, not None).
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ConfigError(f"{path} must be a string")
+    if not value.strip():
+        raise ConfigError(f"{path} cannot be empty")
+    return value
+
+
 def _optional_int(value: object, path: str, default: int, min_value: int = 1) -> int:
     # Validate optional integer fields.
     if value is None:
@@ -330,6 +494,18 @@ def _optional_int(value: object, path: str, default: int, min_value: int = 1) ->
     if value < min_value:
         raise ConfigError(f"{path} must be at least {min_value}")
     return value
+
+
+def _optional_float(value: object, path: str, default: float) -> float:
+    # Validate optional float fields constrained to the open interval (0, 1).
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path} must be a number")
+    number = float(value)
+    if not (0 < number < 1):
+        raise ConfigError(f"{path} must be strictly between 0 and 1")
+    return number
 
 
 def _optional_bool(value: object, path: str, default: bool) -> bool:
@@ -363,12 +539,14 @@ __all__ = [
     "ClaudeTeamConfig",
     "CommandsConfig",
     "ConfigError",
+    "ContextPauseConfig",
     "DefaultsConfig",
     "EventsConfig",
     "IssueTrackerConfig",
     "LayoutMode",
     "TerminalBackend",
     "TerminalConfig",
+    "UsagePauseConfig",
     "IssueTrackerName",
     "CONFIG_DIR",
     "CONFIG_PATH",

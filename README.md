@@ -189,6 +189,19 @@ maniple config set <key> <value>  # Set and persist a value
   },
   "issue_tracker": {
     "override": null
+  },
+  "context_pause": {
+    "enabled": true,
+    "threshold": 0.75,
+    "window_tokens": 1000000,
+    "max_tokens": 250000,
+    "large_window_tokens": 300000
+  },
+  "usage_pause": {
+    "enabled": true,
+    "threshold": 0.75,
+    "state_file": "/tmp/cc-statusline-input.json",
+    "max_stale_seconds": 600
   }
 }
 ```
@@ -205,6 +218,116 @@ maniple config set <key> <value>  # Set and persist a value
 | `events.max_size_mb` | int | Max event log file size before rotation |
 | `events.recent_hours` | int | Hours of events to retain |
 | `issue_tracker.override` | `"beads"` or `"pebbles"` | Force a specific issue tracker |
+| `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses the effective limit (default on) |
+| `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause on windows *smaller* than `large_window_tokens` (default `0.75` = 75%); has no effect on windows at or above it |
+| `context_pause.window_tokens` | int, min `1000` | Context window size, matching the worker's model (default `1000000` = 1M, current for Opus/Sonnet/Fable; the hook auto-caps this at 200K when it detects a Haiku model) |
+| `context_pause.max_tokens` | int, min `1000` | Flat token cap applied once the (Haiku-adjusted) window is at or above `large_window_tokens` (default `250000`) |
+| `context_pause.large_window_tokens` | int, min `1000` | Window-size boundary (in tokens) that switches the regime: `>=` this value uses the flat `max_tokens` cap, below it uses `threshold * window` (default `300000`) |
+| `usage_pause.enabled` | bool | Auto-pause Claude Code workers once the account's 5-hour usage window crosses `threshold` (default on) |
+| `usage_pause.threshold` | float, `0 < t < 1` | 5-hour usage fraction that triggers the pause (default `0.75` = 75%) |
+| `usage_pause.state_file` | string, non-empty | Path to the statusline's cached stdin JSON, read for `rate_limits` (default `/tmp/cc-statusline-input.json`) |
+| `usage_pause.max_stale_seconds` | int, min `1` | Max age of `state_file` before its data is considered stale and ignored (default `600`) |
+
+### Context-Pause (Claude Code workers only)
+
+Once a worker's context usage crosses the effective limit, a PreToolUse hook
+(injected via `build_stop_hook_settings_file` in `iterm_utils.py`, shared by
+both terminal backends) blocks its tool calls except for `Write`, `Read`, and
+`TodoWrite` — enough to write a brief handoff file before ending its turn.
+
+The effective limit is a **step function** of the (Haiku-adjusted) effective
+window, not a flat threshold fraction of it:
+
+- **Window >= `context_pause.large_window_tokens`** (default `300000`) — the
+  window counts as "large" and the flat `context_pause.max_tokens` cap
+  applies (default `250000`); `threshold` has no effect in this regime. A
+  flat 75% of a 1M-token window would be 750K tokens, far past the point a
+  worker can still usefully write a handoff, so large windows always pause
+  at exactly `max_tokens` regardless of how large the window actually is
+  (e.g. a 300K window pauses at a flat 250K, not `0.75 * 300000 = 225000`).
+- **Window < `large_window_tokens`** — the window counts as "small" and
+  `context_pause.threshold * window` controls instead.
+
+The window defaults to 1M tokens, matching current Opus/Sonnet/Fable models
+(comfortably over the 300K large-window boundary, so it always uses the flat
+250K cap); the hook script detects a Haiku model id in the transcript
+(case-insensitive substring match, no full model map) and caps the effective
+window at Haiku 4.5's real 200K there instead — under the 300K boundary, so
+Haiku workers pause at 75% of 200K (150K tokens) rather than the flat cap.
+The hook fails open on any error (missing/malformed transcript, missing
+usage data) so it can never break a worker. **Codex workers are excluded** —
+Codex has no hook mechanism, so this feature has no effect there.
+
+### Usage-Pause (Claude Code workers only)
+
+Sibling to context-pause, but for the **account's rolling 5-hour usage
+window** — the Claude plan's session credit quota — instead of context. A
+second PreToolUse hook (same allowlist/fail-open semantics) blocks tool
+calls once `rate_limits.five_hour.used_percentage` crosses an **escalating
+override ladder** that starts at `usage_pause.threshold`. Dependencies to be
+aware of:
+
+- **Requires the statusline to cache its stdin JSON.** Hooks don't receive
+  `rate_limits` natively — only Claude Code's statusline command does (a
+  [documented Claude Code feature](https://docs.claude.com/en/docs/claude-code/statusline)).
+  The user's statusline script must write its full stdin JSON to
+  `usage_pause.state_file` on every update; workers inherit that statusline,
+  so the file stays fresh while any session is working. If the file is
+  missing, unreadable, or older than `max_stale_seconds`, the hook fails
+  open (never pauses on stale/absent data).
+- **Pro/Max OAuth logins only.** `rate_limits` is only present in the
+  statusline payload for Pro/Max subscriptions — under API-key auth it's
+  simply absent, so this feature silently no-ops (fails open) there too.
+- **Codex workers are excluded** — Codex has no hook mechanism.
+
+#### Escalating override ladder
+
+A paused session (worker or the global hook) can be granted a **continue**
+that climbs one rung at a time, expiring when the account's 5-hour window
+resets:
+
+| Scope | base (default) | rung 1 | rung 2 | rung 3 |
+|-------|-----------------|--------|--------|--------|
+| Worker | 75% | 90% | 95% | unlimited |
+| Global | 80% | 90% | 95% | unlimited |
+
+Override files live at `~/.maniple/usage_override/<scope>.json` (scope is a
+worker's `session_id`, or the literal `"global"`). A worker cannot grant
+itself an override — the hook denies any `Write`/`Edit`/`MultiEdit`/
+`NotebookEdit` call that targets a path inside that directory, regardless of
+usage level.
+
+**MCP tools** (coordinator-facing, registered on the maniple MCP server):
+
+- `override_usage_pause(workers: list[str])` — advances each listed worker
+  one rung up the ladder. ⚠️ **The coordinator may only call this after the
+  human user has given explicit permission for that specific continue, in
+  that session** — never on its own judgment, even if a worker looks close
+  to finishing. When a worker pauses, the coordinator should relay the pause
+  to the user and ask first. Calling it again on an already-unlimited
+  worker is safe (reports `already_unlimited` instead of erroring).
+- `clear_usage_override(workers: list[str])` — reverts listed workers (or
+  the literal `"global"`) back to the base threshold. No approval gate —
+  tightening back to the safe default doesn't need one.
+
+**CLI subcommands** (operate on the *global* scope only):
+
+- `maniple usage-override` — advance the global rung one step (no args), or
+  inspect/reset it: `--status` prints the current rung, live
+  `used_percentage`, and expiry; `--clear` reverts to base.
+- `maniple install-global-usage-guard [--threshold 0.80]` — writes the
+  rendered hook script to `~/.claude/hooks/usage-pause-global.py` and
+  **prints** (never writes) the exact `PreToolUse` hooks JSON snippet to
+  merge by hand into `~/.claude/settings.json`, using `scope="global"`. This
+  installs a guard for *all* Claude Code sessions on the machine, not just
+  maniple workers — useful for protecting your own interactive usage. It
+  never touches `settings.json` itself.
+
+**Global hook vs. worker hooks:** a globally-installed hook must not
+double-pause a maniple worker, which already carries its own scoped hook —
+the generated script checks `os.environ.get("MANIPLE_WORKER")` (set on every
+worker launch, both backends) and no-ops immediately when `scope ==
+"global"` and that env var is present.
 
 ## Environment Variables
 

@@ -35,6 +35,91 @@ def _supported_tracker_list() -> str:
     return ", ".join(sorted(BACKEND_REGISTRY.keys()))
 
 
+def _context_pause_threshold_percent() -> Optional[int]:
+    """Return the configured context-pause threshold as a whole percent.
+
+    Loads config lazily (same pattern as get_claude_command /
+    build_stop_hook_settings_file) so this stays monkeypatchable in tests.
+    Returns None if context_pause is disabled or config can't be read, in
+    which case the caller should omit the heads-up paragraph entirely.
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return round(context_pause.threshold * 100)
+
+
+def _context_pause_max_tokens() -> Optional[int]:
+    """Return the configured context-pause absolute token cap.
+
+    Sibling accessor to _context_pause_threshold_percent() -- the actual
+    pause point is a step function of window size (see
+    _context_pause_large_window_tokens()), and the heads-up paragraph
+    needs both numbers to describe it: on large windows the flat token
+    cap applies instead of the raw threshold fraction. Returns None if
+    context_pause is disabled or config can't be read; the caller should
+    omit the heads-up paragraph entirely in that case (mirrors
+    _context_pause_threshold_percent()).
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return context_pause.max_tokens
+
+
+def _context_pause_large_window_tokens() -> Optional[int]:
+    """Return the configured "large window" boundary (in tokens).
+
+    Sibling accessor to _context_pause_max_tokens() -- windows at or above
+    this size use the flat max_tokens cap instead of threshold * window.
+    Returns None if context_pause is disabled or config can't be read
+    (mirrors the other context-pause accessors).
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return context_pause.large_window_tokens
+
+
+def _usage_pause_threshold_percent() -> Optional[int]:
+    """Return the configured usage-pause threshold as a whole percent.
+
+    Mirrors _context_pause_threshold_percent() for the sibling usage_pause
+    feature (the account's rolling 5-hour usage window, i.e. Claude plan
+    session credit quota -- not context). Returns None if usage_pause is
+    disabled or config can't be read, in which case the caller should omit
+    the heads-up paragraph entirely.
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        usage_pause = load_config().usage_pause
+    except ConfigError:
+        return None
+
+    if not usage_pause.enabled:
+        return None
+    return round(usage_pause.threshold * 100)
+
+
 def _build_tracker_workflow_section(
     issue_id: str,
     backend: IssueTrackerBackend | None,
@@ -182,6 +267,46 @@ def _generate_claude_worker_prompt(
    handles that.
 """
         extra_sections += commit_section
+
+    # Context-pause heads-up (Claude only -- Codex has no hook mechanism).
+    # Omitted entirely if context_pause is disabled or config can't be read.
+    # The actual pause point is a step function of window size: windows at
+    # or above large_window_tokens pause at a flat max_tokens cap
+    # (threshold doesn't apply there at all), while smaller windows (e.g.
+    # Haiku) pause at threshold * window instead. Both regimes are named
+    # here since the worker's model (and thus which regime applies) isn't
+    # known at prompt-generation time.
+    threshold_percent = _context_pause_threshold_percent()
+    if threshold_percent is not None:
+        max_tokens = _context_pause_max_tokens()
+        large_window_tokens = _context_pause_large_window_tokens()
+        extra_sections += f"""
+**Context-window heads-up:** your tool calls will be blocked automatically
+(except Write/Read/TodoWrite) once your context usage crosses the pause
+point, so you can still save a brief handoff. On large context windows
+(>= {large_window_tokens:,} tokens) that's a flat {max_tokens:,}-token cap;
+on smaller windows (e.g. Haiku) it's ~{threshold_percent}% of your window
+instead. If that happens, write a short handoff file (current state, what's
+done, next steps) and end your turn — the coordinator will pick up from
+there.
+"""
+
+    # Usage-pause heads-up (Claude only -- Codex has no hook mechanism).
+    # Sibling to context-pause, but for the account's rolling 5-hour usage
+    # window (Claude plan session credit quota) instead of context. Omitted
+    # entirely if usage_pause is disabled or config can't be read.
+    usage_threshold_percent = _usage_pause_threshold_percent()
+    if usage_threshold_percent is not None:
+        extra_sections += f"""
+**Plan usage heads-up:** once your account's 5-hour session usage hits
+~{usage_threshold_percent}%, your tool calls will be blocked automatically
+(except Write/Read/TodoWrite) so you can still save a brief handoff. If that
+happens, write a short handoff file (current state, what's done, next steps)
+and end your turn — the coordinator will pick up from there. The coordinator
+can grant you a continue past this threshold (an escalating override ladder)
+via the `override_usage_pause` tool, but only with the user's explicit permission
+for that specific continue — it will not do this on its own judgment.
+"""
 
     # Closing/assignment section - 4 cases based on issue_id and custom_prompt
     if issue_id and custom_prompt:

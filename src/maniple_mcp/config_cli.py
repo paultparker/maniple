@@ -193,6 +193,13 @@ def _parse_optional_string(raw_value: str, field: str) -> str | None:
     return raw_value
 
 
+def _parse_nonempty_string(raw_value: str, field: str) -> str:
+    # Parse required (non-nullable) string fields, e.g. usage_pause.state_file.
+    if not raw_value.strip():
+        raise ConfigError(f"{field} cannot be empty")
+    return raw_value
+
+
 def _parse_bool(raw_value: str, field: str) -> bool:
     # Parse boolean values in JSON-compatible form.
     normalized = raw_value.strip().lower()
@@ -211,6 +218,29 @@ def _parse_int(raw_value: str, field: str) -> int:
         raise ConfigError(f"{field} must be an integer") from exc
     if value < 1:
         raise ConfigError(f"{field} must be at least 1")
+    return value
+
+
+def _parse_int_with_min(raw_value: str, field: str, min_value: int) -> int:
+    # Parse integer values with a caller-supplied minimum.
+    try:
+        value = int(raw_value.strip())
+    except ValueError as exc:
+        raise ConfigError(f"{field} must be an integer") from exc
+    if value < min_value:
+        raise ConfigError(f"{field} must be at least {min_value}")
+    return value
+
+
+def _parse_open_unit_float(raw_value: str, field: str) -> float:
+    # Parse a float constrained to the open interval (0, 1), matching
+    # config.py's context_pause.threshold validation.
+    try:
+        value = float(raw_value.strip())
+    except ValueError as exc:
+        raise ConfigError(f"{field} must be a number") from exc
+    if not (0 < value < 1):
+        raise ConfigError(f"{field} must be strictly between 0 and 1")
     return value
 
 
@@ -293,6 +323,31 @@ _FIELD_PARSERS: dict[str, Callable[[str, str], object]] = {
         value,
         field,
         _ALLOWED_ISSUE_TRACKERS,
+    ),
+    "context_pause.enabled": _parse_bool,
+    "context_pause.threshold": _parse_open_unit_float,
+    "context_pause.window_tokens": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1000,
+    ),
+    "context_pause.max_tokens": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1000,
+    ),
+    "context_pause.large_window_tokens": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1000,
+    ),
+    "usage_pause.enabled": _parse_bool,
+    "usage_pause.threshold": _parse_open_unit_float,
+    "usage_pause.state_file": _parse_nonempty_string,
+    "usage_pause.max_stale_seconds": lambda value, field: _parse_int_with_min(
+        value,
+        field,
+        1,
     ),
 }
 

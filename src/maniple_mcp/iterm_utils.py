@@ -10,6 +10,8 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from iterm2.app import App as ItermApp
     from iterm2.connection import Connection as ItermConnection
     from iterm2.profile import LocalWriteOnlyProfile as ItermLocalWriteOnlyProfile
@@ -583,6 +585,28 @@ async def wait_for_agent_ready(
 # =============================================================================
 
 
+def _write_if_changed(path: "Path", content: str) -> None:
+    """Write `content` to `path` only if it differs from what's already there.
+
+    The context-pause hook script is shared and its content never varies
+    for a given maniple version, so rewriting it on every spawn is redundant
+    I/O and opens a torn-read window (a worker could read the file mid-write).
+    When a write IS needed, it's done atomically via a temp file + os.replace
+    so a concurrent reader never sees a partial file.
+    """
+    import os
+
+    try:
+        if path.read_text() == content:
+            return
+    except OSError:
+        pass  # Missing, unreadable, etc. -- fall through to (re)write it.
+
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp_path.write_text(content)
+    os.replace(tmp_path, path)
+
+
 def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True) -> str:
     """
     Build a settings file for Stop hook injection.
@@ -595,6 +619,14 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
     v2.0.72+ where inline JSON causes the file watcher to incorrectly watch the
     temp directory, crashing on Unix sockets. See:
     https://github.com/anthropics/claude-code/issues/14438
+
+    Also injects up to two no-matcher PreToolUse hooks (independent of each
+    other, on by default): config.context_pause pauses a worker once its
+    context usage crosses a threshold (context_pause_hook.py), and
+    config.usage_pause pauses it once the ACCOUNT's rolling 5-hour usage
+    window -- the Claude plan's session credit quota, not context -- crosses
+    a threshold (usage_pause_hook.py). Both only apply to Claude Code
+    workers; Codex has no hook mechanism.
 
     Args:
         marker_id: Unique ID to embed in the marker (typically session_id)
@@ -645,6 +677,87 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
             }],
         }
     }
+
+    # Context-pause / usage-pause hooks: block a worker's tool calls once
+    # either its context usage (context_pause) or the ACCOUNT's rolling
+    # 5-hour usage window (usage_pause, a sibling feature -- plan credit
+    # quota, not context) crosses its configured threshold, except for a
+    # small allowlist of tools (Write/Read/TodoWrite) so it can still save a
+    # handoff. Config is loaded lazily here (same pattern as
+    # cli_backends.claude.get_claude_command) so tests can monkeypatch
+    # config.CONFIG_PATH without a real config file. The two hooks are
+    # independent -- either, both, or neither may be injected.
+    try:
+        from .config import ConfigError, load_config
+
+        _pause_config = load_config()
+        context_pause = _pause_config.context_pause
+        usage_pause = _pause_config.usage_pause
+    except ConfigError:
+        context_pause = None
+        usage_pause = None
+
+    if context_pause is not None and context_pause.enabled:
+        import shlex
+
+        from .context_pause_hook import HOOK_SCRIPT_FILENAME, render_hook_script
+
+        hook_script_path = settings_dir / HOOK_SCRIPT_FILENAME
+        _write_if_changed(hook_script_path, render_hook_script())
+
+        # Shell-quote the script path (it may contain spaces) via
+        # shlex.quote -- naive '"' + value + '"' wrapping breaks (and can
+        # inject into the shell invocation) if the value itself contains a
+        # double-quote. threshold/window_tokens are validated numerics, so
+        # plain interpolation is safe for those. Append `|| true` to match
+        # the neighboring hooks' best-effort style: only an exit code of 2
+        # blocks a tool call, but any other non-zero exit (e.g. python3
+        # missing) surfaces a user-visible hook warning, which `|| true`
+        # silences.
+        context_pause_cmd = (
+            f"python3 {shlex.quote(str(hook_script_path))} "
+            f"{context_pause.threshold} {context_pause.window_tokens} "
+            f"{context_pause.max_tokens} {context_pause.large_window_tokens} || true"
+        )
+        settings["hooks"]["PreToolUse"].append({
+            "hooks": [{"type": "command", "command": context_pause_cmd}],
+        })
+
+    if usage_pause is not None and usage_pause.enabled:
+        import shlex
+
+        from .usage_pause_hook import (
+            HOOK_SCRIPT_FILENAME as USAGE_PAUSE_SCRIPT_FILENAME,
+            render_hook_script as render_usage_pause_hook_script,
+        )
+
+        usage_hook_script_path = settings_dir / USAGE_PAUSE_SCRIPT_FILENAME
+        _write_if_changed(usage_hook_script_path, render_usage_pause_hook_script())
+
+        # scope identifies this worker's override file (see
+        # tools/override_usage_pause.py); override_dir is fixed (not
+        # user-configurable), mirroring the ~/.maniple/pending/ marker dir
+        # used elsewhere in this function.
+        override_dir = Path.home() / ".maniple" / "usage_override"
+
+        # Shell-quote the script path and state_file via shlex.quote.
+        # state_file is user-configurable (config only validates
+        # non-emptiness), so naive '"' + value + '"' wrapping is unsafe --
+        # a value containing '"' or shell metacharacters would break the
+        # quoting and inject into this command. threshold/max_stale_seconds
+        # are validated numerics, so plain interpolation is safe for those.
+        # marker_id becomes `scope` -- it's the worker's own session_id, so
+        # no shell metacharacters are expected, but quote it anyway since
+        # it can technically be caller-supplied.
+        usage_pause_cmd = (
+            f"python3 {shlex.quote(str(usage_hook_script_path))} "
+            f"{usage_pause.threshold} {shlex.quote(usage_pause.state_file)} "
+            f"{usage_pause.max_stale_seconds} {shlex.quote(marker_id)} "
+            f"{shlex.quote(str(override_dir))} || true"
+        )
+        settings["hooks"]["PreToolUse"].append({
+            "hooks": [{"type": "command", "command": usage_pause_cmd}],
+        })
 
     # Auto-approve the project's .mcp.json servers so the "New MCP server found"
     # trust prompt never blocks worker startup. Without this, the prompt stalls

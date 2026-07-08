@@ -1,7 +1,10 @@
 """Tests for the worker_prompt module."""
 
+import json
+
 import pytest
 
+from maniple_mcp import config as config_module
 from maniple_mcp.worker_prompt import (
     AgentType,
     generate_worker_prompt,
@@ -119,6 +122,113 @@ class TestIssueTrackerWorkflow:
             project_path=str(project_path)
         )
         assert f'git commit -m "{issue_id}:' in prompt
+
+
+class TestContextPauseHeadsUp:
+    """Tests for the context-pause threshold paragraph in worker prompts."""
+
+    def test_claude_prompt_mentions_default_threshold(self):
+        """With no config file, the default 75% threshold is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~75%" in prompt
+        assert "Write/Read/TodoWrite" in prompt
+
+    def test_claude_prompt_uses_configured_threshold(self):
+        """A custom configured threshold is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"threshold": 0.6}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~60%" in prompt
+
+    def test_claude_prompt_mentions_default_max_tokens_cap(self):
+        """With no config file, the default 250,000-token cap is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "250,000" in prompt
+
+    def test_claude_prompt_uses_configured_max_tokens(self):
+        """A custom configured max_tokens is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"max_tokens": 100000}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "100,000" in prompt
+        assert "250,000" not in prompt
+
+    def test_claude_prompt_mentions_default_large_window_boundary(self):
+        """With no config file, the default 300,000-token boundary is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "300,000" in prompt
+
+    def test_claude_prompt_uses_configured_large_window_tokens(self):
+        """A custom configured large_window_tokens is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"large_window_tokens": 400000}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "400,000" in prompt
+        assert "300,000" not in prompt
+
+    def test_claude_prompt_omits_heads_up_when_disabled(self):
+        """No heads-up paragraph is included when context_pause is disabled."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"enabled": False}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Context-window heads-up" not in prompt
+
+    def test_codex_prompt_has_no_heads_up(self):
+        """Codex workers have no hook mechanism, so no heads-up paragraph."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="codex")
+        assert "Context-window heads-up" not in prompt
+
+
+class TestUsagePauseHeadsUp:
+    """Tests for the usage-pause (5-hour account window) paragraph in
+    worker prompts -- sibling to TestContextPauseHeadsUp, independent."""
+
+    def test_claude_prompt_mentions_default_threshold(self):
+        """With no config file, the default 75% threshold is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~75%" in prompt
+        assert "5-hour" in prompt
+
+    def test_claude_prompt_uses_configured_threshold(self):
+        """A custom configured threshold is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"threshold": 0.6}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "~60%" in prompt
+
+    def test_claude_prompt_omits_heads_up_when_disabled(self):
+        """No heads-up paragraph is included when usage_pause is disabled."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"usage_pause": {"enabled": False}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Plan usage heads-up" not in prompt
+
+    def test_codex_prompt_has_no_heads_up(self):
+        """Codex workers have no hook mechanism, so no heads-up paragraph."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="codex")
+        assert "Plan usage heads-up" not in prompt
+
+    def test_context_and_usage_heads_up_both_present_independently(self):
+        """Both heads-up paragraphs can coexist (each independently toggled)."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "Context-window heads-up" in prompt
+        assert "Plan usage heads-up" in prompt
+
+    def test_claude_prompt_mentions_override_tool_with_explicit_permission_contract(
+        self,
+    ):
+        """The heads-up must name override_usage_pause and the user-approval
+        contract -- the coordinator must never grant a continue on its own
+        judgment."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "override_usage_pause" in prompt
+        assert "explicit permission" in prompt or "explicit approval" in prompt
 
 
 class TestGetCoordinatorGuidance:
