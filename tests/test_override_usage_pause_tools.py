@@ -148,6 +148,39 @@ class TestOverrideUsagePause:
         expires_at = result["results"]["Zeppo"]["expires_at"]
         assert before + 5 * 3600 - 1 <= expires_at <= after + 5 * 3600 + 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("malformed_rate_limits", [None, []])
+    async def test_null_or_list_rate_limits_falls_back_without_crashing(
+        self, registry, override_dir, monkeypatch, tmp_path, malformed_rate_limits
+    ):
+        """A cache with `rate_limits: null` (or the wrong type) must not
+        raise AttributeError out of resolve_expires_at -- the tool call at
+        override_usage_pause.py's expires_at = resolve_expires_at(state_file)
+        line is outside any try/except, so a crash here would surface as an
+        unhandled tool error instead of granting the fallback continue."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": malformed_rate_limits}))
+        monkeypatch.setattr(
+            override_usage_pause_module,
+            "load_config",
+            lambda: SimpleNamespace(
+                usage_pause=SimpleNamespace(state_file=str(state_file))
+            ),
+        )
+        registry.add(MagicMock(), "/test/path", name="Zeppo")
+        tool, ctx = _build_tool(
+            override_usage_pause_module, "override_usage_pause", registry, override_dir, monkeypatch
+        )
+
+        before = time.time()
+        result = await tool.run({"workers": ["Zeppo"]}, context=ctx)
+        after = time.time()
+
+        entry = result["results"]["Zeppo"]
+        assert entry["new_rung"] == 0.90
+        expires_at = entry["expires_at"]
+        assert before + 5 * 3600 - 1 <= expires_at <= after + 5 * 3600 + 1
+
 
 class TestClearUsageOverride:
     @pytest.mark.asyncio

@@ -161,7 +161,10 @@ def resolve_expires_at(state_file: str) -> float:
     data = _load_state_file(state_file)
     if data is None:
         return fallback
-    five_hour = data.get("rate_limits", {}).get("five_hour", {})
+    rate_limits = data.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return fallback
+    five_hour = rate_limits.get("five_hour")
     if not isinstance(five_hour, dict):
         return fallback
     resets_at = five_hour.get("resets_at")
@@ -177,7 +180,10 @@ def read_used_percentage(state_file: str) -> float | None:
     data = _load_state_file(state_file)
     if data is None:
         return None
-    five_hour = data.get("rate_limits", {}).get("five_hour", {})
+    rate_limits = data.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+    five_hour = rate_limits.get("five_hour")
     if not isinstance(five_hour, dict):
         return None
     used = five_hour.get("used_percentage")

@@ -154,6 +154,31 @@ class TestResolveExpiresAt:
         result = usage_override.resolve_expires_at(str(state_file))
         assert result >= before + 5 * 3600 - 1
 
+    def test_null_rate_limits_falls_back(self, tmp_path):
+        """rate_limits present but null must not crash with AttributeError --
+        `.get("rate_limits", {})` only substitutes the default when the KEY
+        is missing, not when its value is explicitly None."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": None}))
+        before = time.time()
+        result = usage_override.resolve_expires_at(str(state_file))
+        assert result >= before + 5 * 3600 - 1
+
+    def test_list_rate_limits_falls_back(self, tmp_path):
+        """rate_limits present but the wrong type (a list) must not crash."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": []}))
+        before = time.time()
+        result = usage_override.resolve_expires_at(str(state_file))
+        assert result >= before + 5 * 3600 - 1
+
+    def test_null_five_hour_falls_back(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": {"five_hour": None}}))
+        before = time.time()
+        result = usage_override.resolve_expires_at(str(state_file))
+        assert result >= before + 5 * 3600 - 1
+
 
 class TestReadUsedPercentage:
     def test_reads_used_percentage(self, tmp_path):
@@ -169,6 +194,23 @@ class TestReadUsedPercentage:
     def test_malformed_returns_none(self, tmp_path):
         state_file = tmp_path / "state.json"
         state_file.write_text("garbage")
+        assert usage_override.read_used_percentage(str(state_file)) is None
+
+    def test_null_rate_limits_returns_none(self, tmp_path):
+        """rate_limits present but null must not crash with AttributeError."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": None}))
+        assert usage_override.read_used_percentage(str(state_file)) is None
+
+    def test_list_rate_limits_returns_none(self, tmp_path):
+        """rate_limits present but the wrong type (a list) must not crash."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": []}))
+        assert usage_override.read_used_percentage(str(state_file)) is None
+
+    def test_null_five_hour_returns_none(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"rate_limits": {"five_hour": None}}))
         assert usage_override.read_used_percentage(str(state_file)) is None
 
 
