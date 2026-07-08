@@ -685,6 +685,14 @@ def main():
     if args.command == "install-global-usage-guard":
         from .usage_override import install_global_usage_guard
 
+        if not (0 < args.threshold < 1):
+            print(
+                f"Error: --threshold must be strictly between 0 and 1 "
+                f"(got {args.threshold})",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
         result = install_global_usage_guard(threshold=args.threshold)
         print(f"Wrote hook script: {result['script_path']}")
         print()
