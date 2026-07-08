@@ -642,22 +642,28 @@ class TestFieldTypeValidation:
             load_config(config_path)
 
 
+def _write_pause_config(tmp_path: Path, section: str, overrides: dict) -> Path:
+    """Write a config.json with a single {section: overrides} block -- shared
+    by TestContextPauseValidation and TestUsagePauseValidation, which both
+    validate a section of scalar fields (thresholds/token counts/etc.) the
+    same way."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"version": 1, section: overrides}))
+    return config_path
+
+
 class TestContextPauseValidation:
     """Tests for context_pause config section validation."""
 
     def test_valid_override(self, tmp_path: Path):
         """A valid context_pause override parses correctly."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {
-                "enabled": True,
-                "threshold": 0.5,
-                "window_tokens": 100000,
-                "max_tokens": 50000,
-                "large_window_tokens": 400000,
-            },
-        }))
+        config_path = _write_pause_config(tmp_path, "context_pause", {
+            "enabled": True,
+            "threshold": 0.5,
+            "window_tokens": 100000,
+            "max_tokens": 50000,
+            "large_window_tokens": 400000,
+        })
         config = load_config(config_path)
         assert config.context_pause.enabled is True
         assert config.context_pause.threshold == 0.5
@@ -666,214 +672,67 @@ class TestContextPauseValidation:
         assert config.context_pause.large_window_tokens == 400000
 
     def test_enabled_false(self, tmp_path: Path):
-        """context_pause.enabled can be set to False."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"enabled": False},
-        }))
+        """context_pause.enabled can be set to False; other fields keep
+        their defaults."""
+        config_path = _write_pause_config(tmp_path, "context_pause", {"enabled": False})
         config = load_config(config_path)
         assert config.context_pause.enabled is False
-        # Other fields keep their defaults.
         assert config.context_pause.threshold == 0.75
         assert config.context_pause.window_tokens == 1_000_000
         assert config.context_pause.max_tokens == 250_000
         assert config.context_pause.large_window_tokens == 300_000
 
-    def test_enabled_not_bool(self, tmp_path: Path):
-        """Non-boolean enabled raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"enabled": "yes"},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.enabled must be a boolean"):
+    @pytest.mark.parametrize(
+        "field, value, match",
+        [
+            ("enabled", "yes", "context_pause.enabled must be a boolean"),
+            ("threshold", 0, "context_pause.threshold must be"),
+            ("threshold", 1, "context_pause.threshold must be"),
+            ("threshold", -0.1, "context_pause.threshold must be"),
+            ("threshold", 1.5, "context_pause.threshold must be"),
+            ("threshold", "high", "context_pause.threshold must be"),
+            ("threshold", True, "context_pause.threshold must be"),
+            ("window_tokens", 999, "context_pause.window_tokens must be at least 1000"),
+            ("window_tokens", "big", "context_pause.window_tokens must be an integer"),
+            ("max_tokens", 999, "context_pause.max_tokens must be at least 1000"),
+            ("max_tokens", "big", "context_pause.max_tokens must be an integer"),
+            (
+                "large_window_tokens", 999,
+                "context_pause.large_window_tokens must be at least 1000",
+            ),
+            (
+                "large_window_tokens", "big",
+                "context_pause.large_window_tokens must be an integer",
+            ),
+        ],
+    )
+    def test_invalid_field_raises(self, tmp_path: Path, field, value, match):
+        config_path = _write_pause_config(tmp_path, "context_pause", {field: value})
+        with pytest.raises(ConfigError, match=match):
             load_config(config_path)
 
-    def test_threshold_zero_raises_error(self, tmp_path: Path):
-        """threshold of exactly 0 is invalid (must be strictly > 0)."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 0},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_one_raises_error(self, tmp_path: Path):
-        """threshold of exactly 1 is invalid (must be strictly < 1)."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 1},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_negative_raises_error(self, tmp_path: Path):
-        """Negative threshold is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": -0.1},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_above_one_raises_error(self, tmp_path: Path):
-        """threshold above 1 is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 1.5},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_not_a_number_raises_error(self, tmp_path: Path):
-        """Non-numeric threshold raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": "high"},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_bool_not_accepted(self, tmp_path: Path):
-        """Boolean is not accepted for the numeric threshold field."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": True},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_accepts_integer_boundary_value(self, tmp_path: Path):
-        """An in-range integer (e.g. accidentally passed as int) is accepted."""
-        # Not a realistic value, but validates int -> float coercion path.
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 0.9},
-        }))
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("threshold", 0.9),  # in-range value; also validates int -> float coercion
+            ("window_tokens", 1000),  # exactly at minimum
+            ("max_tokens", 1000),  # exactly at minimum
+            ("large_window_tokens", 1000),  # exactly at minimum
+        ],
+    )
+    def test_boundary_value_accepted(self, tmp_path: Path, field, value):
+        config_path = _write_pause_config(tmp_path, "context_pause", {field: value})
         config = load_config(config_path)
-        assert config.context_pause.threshold == 0.9
+        assert getattr(config.context_pause, field) == value
 
-    def test_window_tokens_below_minimum_raises_error(self, tmp_path: Path):
-        """window_tokens below 1000 raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"window_tokens": 999},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.window_tokens must be at least 1000"):
-            load_config(config_path)
-
-    def test_window_tokens_not_int_raises_error(self, tmp_path: Path):
-        """Non-integer window_tokens raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"window_tokens": "big"},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.window_tokens must be an integer"):
-            load_config(config_path)
-
-    def test_window_tokens_minimum_accepted(self, tmp_path: Path):
-        """window_tokens of exactly 1000 is accepted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"window_tokens": 1000},
-        }))
+    @pytest.mark.parametrize(
+        "field, default",
+        [("max_tokens", 250_000), ("large_window_tokens", 300_000)],
+    )
+    def test_field_default_when_omitted(self, tmp_path: Path, field, default):
+        config_path = _write_pause_config(tmp_path, "context_pause", {"threshold": 0.5})
         config = load_config(config_path)
-        assert config.context_pause.window_tokens == 1000
-
-    def test_max_tokens_below_minimum_raises_error(self, tmp_path: Path):
-        """max_tokens below 1000 raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"max_tokens": 999},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.max_tokens must be at least 1000"):
-            load_config(config_path)
-
-    def test_max_tokens_not_int_raises_error(self, tmp_path: Path):
-        """Non-integer max_tokens raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"max_tokens": "big"},
-        }))
-        with pytest.raises(ConfigError, match="context_pause.max_tokens must be an integer"):
-            load_config(config_path)
-
-    def test_max_tokens_minimum_accepted(self, tmp_path: Path):
-        """max_tokens of exactly 1000 is accepted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"max_tokens": 1000},
-        }))
-        config = load_config(config_path)
-        assert config.context_pause.max_tokens == 1000
-
-    def test_max_tokens_default_is_250000(self, tmp_path: Path):
-        """max_tokens defaults to 250000 when omitted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 0.5},
-        }))
-        config = load_config(config_path)
-        assert config.context_pause.max_tokens == 250_000
-
-    def test_large_window_tokens_below_minimum_raises_error(self, tmp_path: Path):
-        """large_window_tokens below 1000 raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"large_window_tokens": 999},
-        }))
-        with pytest.raises(
-            ConfigError, match="context_pause.large_window_tokens must be at least 1000"
-        ):
-            load_config(config_path)
-
-    def test_large_window_tokens_not_int_raises_error(self, tmp_path: Path):
-        """Non-integer large_window_tokens raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"large_window_tokens": "big"},
-        }))
-        with pytest.raises(
-            ConfigError, match="context_pause.large_window_tokens must be an integer"
-        ):
-            load_config(config_path)
-
-    def test_large_window_tokens_minimum_accepted(self, tmp_path: Path):
-        """large_window_tokens of exactly 1000 is accepted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"large_window_tokens": 1000},
-        }))
-        config = load_config(config_path)
-        assert config.context_pause.large_window_tokens == 1000
-
-    def test_large_window_tokens_default_is_300000(self, tmp_path: Path):
-        """large_window_tokens defaults to 300000 when omitted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "context_pause": {"threshold": 0.5},
-        }))
-        config = load_config(config_path)
-        assert config.context_pause.large_window_tokens == 300_000
+        assert getattr(config.context_pause, field) == default
 
 
 class TestUsagePauseValidation:
@@ -881,16 +740,12 @@ class TestUsagePauseValidation:
 
     def test_valid_override(self, tmp_path: Path):
         """A valid usage_pause override parses correctly."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {
-                "enabled": True,
-                "threshold": 0.5,
-                "state_file": "/tmp/custom-statusline.json",
-                "max_stale_seconds": 120,
-            },
-        }))
+        config_path = _write_pause_config(tmp_path, "usage_pause", {
+            "enabled": True,
+            "threshold": 0.5,
+            "state_file": "/tmp/custom-statusline.json",
+            "max_stale_seconds": 120,
+        })
         config = load_config(config_path)
         assert config.usage_pause.enabled is True
         assert config.usage_pause.threshold == 0.5
@@ -898,146 +753,43 @@ class TestUsagePauseValidation:
         assert config.usage_pause.max_stale_seconds == 120
 
     def test_enabled_false(self, tmp_path: Path):
-        """usage_pause.enabled can be set to False."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"enabled": False},
-        }))
+        """usage_pause.enabled can be set to False; other fields keep their
+        defaults."""
+        config_path = _write_pause_config(tmp_path, "usage_pause", {"enabled": False})
         config = load_config(config_path)
         assert config.usage_pause.enabled is False
-        # Other fields keep their defaults.
         assert config.usage_pause.threshold == 0.75
         assert config.usage_pause.state_file == "/tmp/cc-statusline-input.json"
         assert config.usage_pause.max_stale_seconds == 600
 
-    def test_enabled_not_bool(self, tmp_path: Path):
-        """Non-boolean enabled raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"enabled": "yes"},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.enabled must be a boolean"):
-            load_config(config_path)
-
-    def test_threshold_zero_raises_error(self, tmp_path: Path):
-        """threshold of exactly 0 is invalid (must be strictly > 0)."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": 0},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_one_raises_error(self, tmp_path: Path):
-        """threshold of exactly 1 is invalid (must be strictly < 1)."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": 1},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_negative_raises_error(self, tmp_path: Path):
-        """Negative threshold is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": -0.1},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_above_one_raises_error(self, tmp_path: Path):
-        """threshold above 1 is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": 1.5},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_not_a_number_raises_error(self, tmp_path: Path):
-        """Non-numeric threshold raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": "high"},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_threshold_bool_not_accepted(self, tmp_path: Path):
-        """Boolean is not accepted for the numeric threshold field."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"threshold": True},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.threshold must be"):
-            load_config(config_path)
-
-    def test_state_file_empty_string_raises_error(self, tmp_path: Path):
-        """Empty state_file is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"state_file": ""},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.state_file cannot be empty"):
-            load_config(config_path)
-
-    def test_state_file_whitespace_only_raises_error(self, tmp_path: Path):
-        """Whitespace-only state_file is invalid."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"state_file": "   "},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.state_file cannot be empty"):
-            load_config(config_path)
-
-    def test_state_file_not_string_raises_error(self, tmp_path: Path):
-        """Non-string state_file raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"state_file": 123},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.state_file must be a string"):
-            load_config(config_path)
-
-    def test_max_stale_seconds_below_minimum_raises_error(self, tmp_path: Path):
-        """max_stale_seconds below 1 raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"max_stale_seconds": 0},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.max_stale_seconds must be at least 1"):
-            load_config(config_path)
-
-    def test_max_stale_seconds_not_int_raises_error(self, tmp_path: Path):
-        """Non-integer max_stale_seconds raises ConfigError."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"max_stale_seconds": "long"},
-        }))
-        with pytest.raises(ConfigError, match="usage_pause.max_stale_seconds must be an integer"):
+    @pytest.mark.parametrize(
+        "field, value, match",
+        [
+            ("enabled", "yes", "usage_pause.enabled must be a boolean"),
+            ("threshold", 0, "usage_pause.threshold must be"),
+            ("threshold", 1, "usage_pause.threshold must be"),
+            ("threshold", -0.1, "usage_pause.threshold must be"),
+            ("threshold", 1.5, "usage_pause.threshold must be"),
+            ("threshold", "high", "usage_pause.threshold must be"),
+            ("threshold", True, "usage_pause.threshold must be"),
+            ("state_file", "", "usage_pause.state_file cannot be empty"),
+            ("state_file", "   ", "usage_pause.state_file cannot be empty"),
+            ("state_file", 123, "usage_pause.state_file must be a string"),
+            ("max_stale_seconds", 0, "usage_pause.max_stale_seconds must be at least 1"),
+            (
+                "max_stale_seconds", "long",
+                "usage_pause.max_stale_seconds must be an integer",
+            ),
+        ],
+    )
+    def test_invalid_field_raises(self, tmp_path: Path, field, value, match):
+        config_path = _write_pause_config(tmp_path, "usage_pause", {field: value})
+        with pytest.raises(ConfigError, match=match):
             load_config(config_path)
 
     def test_max_stale_seconds_minimum_accepted(self, tmp_path: Path):
         """max_stale_seconds of exactly 1 is accepted."""
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "version": 1,
-            "usage_pause": {"max_stale_seconds": 1},
-        }))
+        config_path = _write_pause_config(tmp_path, "usage_pause", {"max_stale_seconds": 1})
         config = load_config(config_path)
         assert config.usage_pause.max_stale_seconds == 1
 
