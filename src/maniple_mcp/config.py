@@ -82,13 +82,18 @@ class ContextPauseConfig:
     handoff (via the hook's tool allowlist) before ending its turn. Codex
     workers have no hook mechanism and are unaffected.
 
-    The effective limit is `min(threshold * window, max_tokens)` -- a flat
-    `threshold` fraction of the window is too generous on today's 1M-token
-    windows (75% would be 750K tokens, far past the point a worker can
-    still usefully write a handoff), so `max_tokens` caps the absolute
-    token count regardless of window size. On a 1M+ window this yields a
-    250K-token pause point; on Haiku's real 200K window (see below) it
-    yields 150K (75% of 200K, since that's below the 250K cap).
+    The effective limit is a step function of the (Haiku-adjusted) effective
+    window, not a flat `threshold` fraction of it:
+    - If the effective window is >= `large_window_tokens` (default 300K),
+      the window counts as "large" and the flat `max_tokens` cap applies
+      (default 250K) -- `threshold` does not apply at all in this regime.
+      A flat 75% of a 1M-token window would be 750K tokens, far past the
+      point a worker can still usefully write a handoff, so large windows
+      always pause at exactly `max_tokens`.
+    - Otherwise (effective window < `large_window_tokens`), the window
+      counts as "small" and `threshold * window` controls instead -- e.g.
+      Haiku's real 200K window (see below) is under the 300K boundary, so
+      it pauses at 75% = 150K, not the flat 250K cap.
 
     `window_tokens` should match the worker's model's context window. As of
     the 2026-07 model catalog, current Opus (4.8/4.7/4.6), Sonnet (5/4.6),
@@ -103,6 +108,7 @@ class ContextPauseConfig:
     threshold: float = 0.75
     window_tokens: int = 1_000_000
     max_tokens: int = 250_000
+    large_window_tokens: int = 300_000
 
 
 @dataclass
@@ -372,7 +378,9 @@ def _parse_context_pause(value: object) -> ContextPauseConfig:
     # Parse worker context-window pause thresholds.
     data = _ensure_dict(value, "context_pause")
     _validate_keys(
-        data, {"enabled", "threshold", "window_tokens", "max_tokens"}, "context_pause"
+        data,
+        {"enabled", "threshold", "window_tokens", "max_tokens", "large_window_tokens"},
+        "context_pause",
     )
     return ContextPauseConfig(
         enabled=_optional_bool(
@@ -395,6 +403,12 @@ def _parse_context_pause(value: object) -> ContextPauseConfig:
             data.get("max_tokens"),
             "context_pause.max_tokens",
             ContextPauseConfig.max_tokens,
+            min_value=1000,
+        ),
+        large_window_tokens=_optional_int(
+            data.get("large_window_tokens"),
+            "context_pause.large_window_tokens",
+            ContextPauseConfig.large_window_tokens,
             min_value=1000,
         ),
     )

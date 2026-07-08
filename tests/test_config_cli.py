@@ -143,6 +143,21 @@ class TestConfigSet:
         with pytest.raises(ConfigError, match="context_pause.max_tokens must be at least"):
             set_config_value("context_pause.max_tokens", "999")
 
+    def test_set_context_pause_large_window_tokens(self, config_path: Path):
+        """set_config_value persists context_pause.large_window_tokens."""
+        set_config_value("context_pause.large_window_tokens", "400000")
+        config = load_config()
+        assert config.context_pause.large_window_tokens == 400000
+
+    def test_set_context_pause_large_window_tokens_below_minimum_rejected(
+        self, config_path: Path
+    ):
+        """set_config_value rejects a large_window_tokens below the minimum."""
+        with pytest.raises(
+            ConfigError, match="context_pause.large_window_tokens must be at least"
+        ):
+            set_config_value("context_pause.large_window_tokens", "999")
+
     def test_set_usage_pause_enabled(self, config_path: Path):
         """set_config_value persists usage_pause.enabled."""
         set_config_value("usage_pause.enabled", "false")
@@ -200,6 +215,14 @@ class TestConfigSet:
             "context_pause": {"max_tokens": 100000},
         }))
         assert get_config_value("context_pause.max_tokens") == 100000
+
+    def test_get_context_pause_large_window_tokens(self, config_path: Path):
+        """get_config_value returns context_pause.large_window_tokens."""
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"large_window_tokens": 400000},
+        }))
+        assert get_config_value("context_pause.large_window_tokens") == 400000
 
 
 class TestStaleThresholdEnvOverride:

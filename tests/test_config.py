@@ -655,6 +655,7 @@ class TestContextPauseValidation:
                 "threshold": 0.5,
                 "window_tokens": 100000,
                 "max_tokens": 50000,
+                "large_window_tokens": 400000,
             },
         }))
         config = load_config(config_path)
@@ -662,6 +663,7 @@ class TestContextPauseValidation:
         assert config.context_pause.threshold == 0.5
         assert config.context_pause.window_tokens == 100000
         assert config.context_pause.max_tokens == 50000
+        assert config.context_pause.large_window_tokens == 400000
 
     def test_enabled_false(self, tmp_path: Path):
         """context_pause.enabled can be set to False."""
@@ -676,6 +678,7 @@ class TestContextPauseValidation:
         assert config.context_pause.threshold == 0.75
         assert config.context_pause.window_tokens == 1_000_000
         assert config.context_pause.max_tokens == 250_000
+        assert config.context_pause.large_window_tokens == 300_000
 
     def test_enabled_not_bool(self, tmp_path: Path):
         """Non-boolean enabled raises ConfigError."""
@@ -827,6 +830,50 @@ class TestContextPauseValidation:
         }))
         config = load_config(config_path)
         assert config.context_pause.max_tokens == 250_000
+
+    def test_large_window_tokens_below_minimum_raises_error(self, tmp_path: Path):
+        """large_window_tokens below 1000 raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"large_window_tokens": 999},
+        }))
+        with pytest.raises(
+            ConfigError, match="context_pause.large_window_tokens must be at least 1000"
+        ):
+            load_config(config_path)
+
+    def test_large_window_tokens_not_int_raises_error(self, tmp_path: Path):
+        """Non-integer large_window_tokens raises ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"large_window_tokens": "big"},
+        }))
+        with pytest.raises(
+            ConfigError, match="context_pause.large_window_tokens must be an integer"
+        ):
+            load_config(config_path)
+
+    def test_large_window_tokens_minimum_accepted(self, tmp_path: Path):
+        """large_window_tokens of exactly 1000 is accepted."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"large_window_tokens": 1000},
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.large_window_tokens == 1000
+
+    def test_large_window_tokens_default_is_300000(self, tmp_path: Path):
+        """large_window_tokens defaults to 300000 when omitted."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "context_pause": {"threshold": 0.5},
+        }))
+        config = load_config(config_path)
+        assert config.context_pause.large_window_tokens == 300_000
 
 
 class TestUsagePauseValidation:
@@ -1143,6 +1190,7 @@ class TestDataclasses:
         assert config.threshold == 0.75
         assert config.window_tokens == 1_000_000
         assert config.max_tokens == 250_000
+        assert config.large_window_tokens == 300_000
 
     def test_usage_pause_config_defaults(self):
         """UsagePauseConfig has correct defaults."""
