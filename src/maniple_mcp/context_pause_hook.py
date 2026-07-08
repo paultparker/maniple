@@ -239,7 +239,14 @@ def main(argv):
     if not transcript_path:
         return 0
 
-    agent_id = payload.get("agent_id")
+    agent_id = payload.get("agent_id") or None
+    if agent_id and ("/" in agent_id or os.sep in agent_id or ".." in agent_id):
+        # Belt-and-suspenders: never let an agent_id build a filesystem
+        # path outside the expected subagents/ directory. A value like
+        # this already fails open today (the derived path lands somewhere
+        # nonexistent), but don't rely on that as the only protection.
+        return 0
+
     scan_path = transcript_path
     if agent_id:
         try:

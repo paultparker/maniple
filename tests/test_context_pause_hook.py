@@ -896,3 +896,97 @@ class TestSubagentContext:
         result = _run_hook_with_payload(hook_script, payload, window_tokens=200000)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+    def test_empty_string_agent_id_treated_as_absent(self, hook_script, tmp_path):
+        """A falsy-but-not-None agent_id (e.g. "") must be normalized to a
+        real "no subagent" case, not passed through to the scanner as a
+        truthy identity value. Before the fix: main()'s `if agent_id:` gate
+        (truthiness) treated "" as absent and left scan_path as the parent
+        transcript, but `_last_main_chain_usage(scan_path, agent_id="")`
+        was still called with agent_id="" -- the scanner's `if agent_id is
+        None` check (identity) then took the agentId-match branch instead
+        of the sidechain-skip branch, matched nothing in the parent
+        transcript, used stayed None, and the hook silently allowed
+        everything regardless of the parent's real usage."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 190000})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "",
+        }
+        result = _run_hook_with_payload(hook_script, payload, window_tokens=200000)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestSubagentPathTraversalHardening:
+    """Belt-and-suspenders: an agent_id containing path-traversal
+    characters must never reach _subagent_transcript_path at all. This
+    already fails open today as a side effect (the derived path lands
+    somewhere nonexistent or unreadable), but an explicit guard means that
+    isn't accidental -- a suspicious agent_id short-circuits straight to
+    fail-open instead of being used to build a filesystem path."""
+
+    def test_agent_id_with_path_separator_fails_open(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "evil/agent",
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_agent_id_with_dotdot_fails_open(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {
+            "transcript_path": str(transcript),
+            "tool_name": "Bash",
+            "agent_id": "../../etc/passwd",
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_well_formed_agent_id_still_works(self, hook_script, tmp_path):
+        """Regression: a normal hex agent_id (no traversal characters) is
+        unaffected by the guard and still resolves/scans its subagent
+        transcript as before."""
+        agent_id = "ad99aa9504d322af6"
+        parent_path, _ = _write_subagent_transcript(
+            tmp_path, agent_id, [_subagent_entry({"input_tokens": 260_000}, agent_id)]
+        )
+        payload = {
+            "transcript_path": str(parent_path),
+            "tool_name": "Bash",
+            "agent_id": agent_id,
+        }
+        result = _run_hook_with_payload(
+            hook_script,
+            payload,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
