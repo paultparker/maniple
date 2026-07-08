@@ -576,6 +576,33 @@ def main():
         help="Actually delete files (default: dry run).",
     )
 
+    usage_override_parser = subparsers.add_parser(
+        "usage-override",
+        help="Manage the global usage-pause override ladder",
+    )
+    usage_override_group = usage_override_parser.add_mutually_exclusive_group()
+    usage_override_group.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear the global override (revert to the base threshold)",
+    )
+    usage_override_group.add_argument(
+        "--status",
+        action="store_true",
+        help="Show the global override's current rung, usage, and expiry",
+    )
+
+    install_guard_parser = subparsers.add_parser(
+        "install-global-usage-guard",
+        help="Install the global usage-pause PreToolUse hook",
+    )
+    install_guard_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.80,
+        help="Usage fraction (0-1) at which the global hook denies tool calls (default: 0.80)",
+    )
+
     args = parser.parse_args()
 
     # Handle config subcommands early to avoid starting the server.
@@ -623,6 +650,46 @@ def main():
             f"{action} {report.deleted_count} backup(s). "
             f"Kept {report.kept_count} backup(s)."
         )
+        return
+
+    if args.command == "usage-override":
+        from . import usage_override_cli
+
+        def _format_expiry(expires_at):
+            if expires_at is None:
+                return "n/a"
+            import datetime
+
+            return datetime.datetime.fromtimestamp(expires_at).strftime(
+                "%Y-%m-%d %H:%M:%S local"
+            )
+
+        if args.status:
+            status = usage_override_cli.status_global()
+            used = status["used_percentage"]
+            print(f"rung: {status['rung']}")
+            print(f"used_percentage: {used if used is not None else 'unknown'}")
+            print(f"expires_at: {_format_expiry(status['expires_at'])}")
+        elif args.clear:
+            cleared = usage_override_cli.clear_global()
+            print("cleared" if cleared else "no override was set")
+        else:
+            result = usage_override_cli.advance_global()
+            if result["already_unlimited"]:
+                print(f"already unlimited (expires {_format_expiry(result['expires_at'])})")
+            else:
+                print(f"new rung: {result['new_rung']}")
+                print(f"expires_at: {_format_expiry(result['expires_at'])}")
+        return
+
+    if args.command == "install-global-usage-guard":
+        from .usage_override import install_global_usage_guard
+
+        result = install_global_usage_guard(threshold=args.threshold)
+        print(f"Wrote hook script: {result['script_path']}")
+        print()
+        print('Add this to the "hooks" section of ~/.claude/settings.json:')
+        print(result["snippet"])
         return
 
     # Default behavior: run the MCP server.
