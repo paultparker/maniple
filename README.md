@@ -193,7 +193,8 @@ maniple config set <key> <value>  # Set and persist a value
   "context_pause": {
     "enabled": true,
     "threshold": 0.75,
-    "window_tokens": 1000000
+    "window_tokens": 1000000,
+    "max_tokens": 250000
   },
   "usage_pause": {
     "enabled": true,
@@ -216,9 +217,10 @@ maniple config set <key> <value>  # Set and persist a value
 | `events.max_size_mb` | int | Max event log file size before rotation |
 | `events.recent_hours` | int | Hours of events to retain |
 | `issue_tracker.override` | `"beads"` or `"pebbles"` | Force a specific issue tracker |
-| `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses `threshold` (default on) |
-| `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause (default `0.75` = 75%) |
+| `context_pause.enabled` | bool | Auto-pause Claude Code workers once context usage crosses the effective limit (default on) |
+| `context_pause.threshold` | float, `0 < t < 1` | Context-usage fraction that triggers the pause, before the `max_tokens` cap is applied (default `0.75` = 75%) |
 | `context_pause.window_tokens` | int, min `1000` | Context window size, matching the worker's model (default `1000000` = 1M, current for Opus/Sonnet/Fable; the hook auto-caps this at 200K when it detects a Haiku model) |
+| `context_pause.max_tokens` | int, min `1000` | Absolute token cap on the pause point — the effective limit is `min(threshold * window, max_tokens)` (default `250000`) |
 | `usage_pause.enabled` | bool | Auto-pause Claude Code workers once the account's 5-hour usage window crosses `threshold` (default on) |
 | `usage_pause.threshold` | float, `0 < t < 1` | 5-hour usage fraction that triggers the pause (default `0.75` = 75%) |
 | `usage_pause.state_file` | string, non-empty | Path to the statusline's cached stdin JSON, read for `rate_limits` (default `/tmp/cc-statusline-input.json`) |
@@ -226,17 +228,25 @@ maniple config set <key> <value>  # Set and persist a value
 
 ### Context-Pause (Claude Code workers only)
 
-Once a worker's context usage crosses `context_pause.threshold`, a PreToolUse
-hook (injected via `build_stop_hook_settings_file` in `iterm_utils.py`, shared
-by both terminal backends) blocks its tool calls except for `Write`, `Read`,
-and `TodoWrite` — enough to write a brief handoff file before ending its turn.
-The window defaults to 1M tokens, matching current Opus/Sonnet/Fable models;
-the hook script detects a Haiku model id in the transcript (case-insensitive
-substring match, no full model map) and caps the effective window at Haiku
-4.5's real 200K there instead. The hook fails open on any error
-(missing/malformed transcript, missing usage data) so it can never break a
-worker. **Codex workers are excluded** — Codex has no hook mechanism, so
-this feature has no effect there.
+Once a worker's context usage crosses the effective limit, a PreToolUse hook
+(injected via `build_stop_hook_settings_file` in `iterm_utils.py`, shared by
+both terminal backends) blocks its tool calls except for `Write`, `Read`, and
+`TodoWrite` — enough to write a brief handoff file before ending its turn.
+The effective limit is `min(context_pause.threshold * window, context_pause.max_tokens)`
+— a flat 75% of a 1M-token window would be 750K tokens, far past the point a
+worker can still usefully write a handoff, so the absolute token count is
+capped at `max_tokens` (default `250000`) regardless of window size. On the
+default 1M window this yields a 250K-token pause point; on a smaller window
+where the threshold fraction stays under the cap, the fraction controls
+instead. The window defaults to 1M tokens, matching current Opus/Sonnet/Fable
+models; the hook script detects a Haiku model id in the transcript
+(case-insensitive substring match, no full model map) and caps the effective
+window at Haiku 4.5's real 200K there instead — 75% of that 200K window
+(150K tokens) stays under the 250K cap, so the threshold fraction controls
+for Haiku workers. The hook fails open on any error (missing/malformed
+transcript, missing usage data) so it can never break a worker. **Codex
+workers are excluded** — Codex has no hook mechanism, so this feature has no
+effect there.
 
 ### Usage-Pause (Claude Code workers only)
 
