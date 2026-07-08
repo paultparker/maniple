@@ -717,7 +717,7 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
         context_pause_cmd = (
             f"python3 {shlex.quote(str(hook_script_path))} "
             f"{context_pause.threshold} {context_pause.window_tokens} "
-            f"{context_pause.max_tokens} || true"
+            f"{context_pause.max_tokens} {context_pause.large_window_tokens} || true"
         )
         settings["hooks"]["PreToolUse"].append({
             "hooks": [{"type": "command", "command": context_pause_cmd}],
