@@ -67,6 +67,7 @@ def _run_hook(
     threshold: float = 0.75,
     window_tokens: int = 200000,
     max_tokens: int = 250000,
+    large_window_tokens: int = 300000,
 ) -> subprocess.CompletedProcess:
     payload = {"transcript_path": str(transcript_path), "tool_name": tool_name}
     return subprocess.run(
@@ -76,6 +77,7 @@ def _run_hook(
             str(threshold),
             str(window_tokens),
             str(max_tokens),
+            str(large_window_tokens),
         ],
         input=json.dumps(payload),
         capture_output=True,
@@ -154,14 +156,20 @@ class TestThresholdEnforcement:
 
 
 class TestMaxTokensCap:
-    """The effective limit is min(threshold * window, max_tokens) -- on
-    large (1M+) windows the absolute token cap binds well before the raw
-    threshold fraction would, so a worker is paused at a sane token count
-    regardless of how large its configured window is."""
+    """The effective limit is a step function of the (Haiku-adjusted)
+    effective window, not a flat threshold fraction of it:
+
+    - window >= large_window_tokens ("large") -> flat max_tokens cap;
+      threshold does not apply at all in this regime.
+    - window < large_window_tokens ("small") -> threshold * window controls.
+
+    This means large windows always pause at exactly max_tokens (not some
+    fraction of the window), while small windows (e.g. Haiku's real 200K)
+    keep the old threshold-fraction behavior."""
 
     def test_large_window_allows_just_under_cap(self, hook_script, tmp_path):
-        # 1M window, 0.75 threshold -> raw fraction would allow up to 750K,
-        # but max_tokens=250000 caps it well below that.
+        # 1M window (>= 300K large_window_tokens) -> flat 250K cap, not the
+        # raw 0.75 * 1M = 750K the threshold fraction would otherwise allow.
         transcript = _write_transcript(
             tmp_path, [_assistant_entry({"input_tokens": 249_999})]
         )
@@ -172,6 +180,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
@@ -187,6 +196,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -194,8 +204,8 @@ class TestMaxTokensCap:
     def test_small_window_still_bound_by_threshold_fraction_under_cap(
         self, hook_script, tmp_path
     ):
-        # 200K window, 0.75 threshold -> 150K, well under the 250K cap, so
-        # the cap never binds and the threshold fraction alone controls.
+        # 200K window (< 300K large_window_tokens) -> threshold fraction
+        # (150K) controls, well under the 250K cap.
         transcript = _write_transcript(
             tmp_path, [_assistant_entry({"input_tokens": 149_999})]
         )
@@ -206,6 +216,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=200_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
@@ -220,6 +231,80 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=200_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_window_at_large_boundary_uses_flat_cap_not_fraction(
+        self, hook_script, tmp_path
+    ):
+        """A window exactly AT large_window_tokens (300K) uses the flat
+        250K cap, NOT 0.75 * 300K = 225K -- the boundary is inclusive and
+        the flat-cap regime wins at the boundary."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 249_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=300_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 250_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=300_000,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_window_just_under_large_boundary_uses_fraction_not_flat_cap(
+        self, hook_script, tmp_path
+    ):
+        """A window just under large_window_tokens (299_999 < 300_000)
+        still uses the threshold fraction (0.75 * 299_999 = 224_999.25),
+        NOT the flat 250K cap -- confirms the boundary is a hard cutoff on
+        window size, not proximity to the cap."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 224_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=299_999,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 225_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=299_999,
+            max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -235,6 +320,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=100_000,
+            large_window_tokens=300_000,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
@@ -249,13 +335,48 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=100_000,
+            large_window_tokens=300_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_custom_large_window_tokens_is_configurable(self, hook_script, tmp_path):
+        """Lowering large_window_tokens below a window pulls it into the
+        flat-cap regime even though it wouldn't be "large" under defaults."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 149_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=200_000,
+            max_tokens=150_000,
+            large_window_tokens=100_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 150_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=200_000,
+            max_tokens=150_000,
+            large_window_tokens=100_000,
         )
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_haiku_window_capped_by_threshold_not_max_tokens(self, hook_script, tmp_path):
-        """Haiku's real 200K window (from _effective_window) yields a 150K
-        threshold-fraction limit, still well under the 250K default cap."""
+        """Haiku's real 200K window (from _effective_window) is under the
+        300K large_window_tokens boundary, so the 150K threshold-fraction
+        limit controls instead of the flat 250K cap."""
         transcript = _write_transcript(
             tmp_path,
             [_assistant_entry({"input_tokens": 160_000}, model="claude-haiku-4-5-20260101")],
@@ -267,6 +388,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -282,6 +404,7 @@ class TestMaxTokensCap:
             threshold=0.75,
             window_tokens=1_000_000,
             max_tokens=250_000,
+            large_window_tokens=300_000,
         )
         output = json.loads(result.stdout)
         reason = output["hookSpecificOutput"]["permissionDecisionReason"]
@@ -290,7 +413,7 @@ class TestMaxTokensCap:
 
     def test_missing_max_tokens_argv_fails_open(self, hook_script, tmp_path):
         """Only threshold + window_tokens supplied (old 2-arg invocation) --
-        the script now requires a 3rd argv, so this fails open rather than
+        the script now requires 4 argv, so this fails open rather than
         crashing or misbehaving."""
         transcript = _write_transcript(
             tmp_path, [_assistant_entry({"input_tokens": 999_999})]
@@ -298,6 +421,24 @@ class TestMaxTokensCap:
         payload = {"transcript_path": str(transcript), "tool_name": "Bash"}
         result = subprocess.run(
             [sys.executable, str(hook_script), "0.75", "1000000"],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_missing_large_window_tokens_argv_fails_open(self, hook_script, tmp_path):
+        """Only 3 argv supplied (threshold, window_tokens, max_tokens) --
+        the script now requires a 4th argv (large_window_tokens), so this
+        fails open."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {"transcript_path": str(transcript), "tool_name": "Bash"}
+        result = subprocess.run(
+            [sys.executable, str(hook_script), "0.75", "1000000", "250000"],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
