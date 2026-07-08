@@ -155,6 +155,20 @@ class TestContextPauseHeadsUp:
         assert "100,000" in prompt
         assert "250,000" not in prompt
 
+    def test_claude_prompt_mentions_default_large_window_boundary(self):
+        """With no config file, the default 300,000-token boundary is mentioned."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "300,000" in prompt
+
+    def test_claude_prompt_uses_configured_large_window_tokens(self):
+        """A custom configured large_window_tokens is reflected in the prompt."""
+        config_module.CONFIG_PATH.write_text(
+            json.dumps({"context_pause": {"large_window_tokens": 400000}})
+        )
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "400,000" in prompt
+        assert "300,000" not in prompt
+
     def test_claude_prompt_omits_heads_up_when_disabled(self):
         """No heads-up paragraph is included when context_pause is disabled."""
         config_module.CONFIG_PATH.write_text(

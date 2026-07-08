@@ -59,12 +59,13 @@ def _context_pause_max_tokens() -> Optional[int]:
     """Return the configured context-pause absolute token cap.
 
     Sibling accessor to _context_pause_threshold_percent() -- the actual
-    pause point is min(threshold * window, max_tokens), so the heads-up
-    paragraph needs both numbers to describe the real effective limit
-    (on large windows the token cap binds well before the raw threshold
-    fraction would). Returns None if context_pause is disabled or config
-    can't be read; the caller should omit the heads-up paragraph entirely
-    in that case (mirrors _context_pause_threshold_percent()).
+    pause point is a step function of window size (see
+    _context_pause_large_window_tokens()), and the heads-up paragraph
+    needs both numbers to describe it: on large windows the flat token
+    cap applies instead of the raw threshold fraction. Returns None if
+    context_pause is disabled or config can't be read; the caller should
+    omit the heads-up paragraph entirely in that case (mirrors
+    _context_pause_threshold_percent()).
     """
     try:
         from .config import ConfigError, load_config
@@ -76,6 +77,26 @@ def _context_pause_max_tokens() -> Optional[int]:
     if not context_pause.enabled:
         return None
     return context_pause.max_tokens
+
+
+def _context_pause_large_window_tokens() -> Optional[int]:
+    """Return the configured "large window" boundary (in tokens).
+
+    Sibling accessor to _context_pause_max_tokens() -- windows at or above
+    this size use the flat max_tokens cap instead of threshold * window.
+    Returns None if context_pause is disabled or config can't be read
+    (mirrors the other context-pause accessors).
+    """
+    try:
+        from .config import ConfigError, load_config
+
+        context_pause = load_config().context_pause
+    except ConfigError:
+        return None
+
+    if not context_pause.enabled:
+        return None
+    return context_pause.large_window_tokens
 
 
 def _usage_pause_threshold_percent() -> Optional[int]:
@@ -249,19 +270,25 @@ def _generate_claude_worker_prompt(
 
     # Context-pause heads-up (Claude only -- Codex has no hook mechanism).
     # Omitted entirely if context_pause is disabled or config can't be read.
-    # The actual pause point is min(threshold * window, max_tokens) -- on
-    # today's 1M-token windows the absolute cap binds well before the raw
-    # threshold fraction would, so both numbers are named here.
+    # The actual pause point is a step function of window size: windows at
+    # or above large_window_tokens pause at a flat max_tokens cap
+    # (threshold doesn't apply there at all), while smaller windows (e.g.
+    # Haiku) pause at threshold * window instead. Both regimes are named
+    # here since the worker's model (and thus which regime applies) isn't
+    # known at prompt-generation time.
     threshold_percent = _context_pause_threshold_percent()
     if threshold_percent is not None:
         max_tokens = _context_pause_max_tokens()
+        large_window_tokens = _context_pause_large_window_tokens()
         extra_sections += f"""
-**Context-window heads-up:** once your context usage hits ~{threshold_percent}%
-of your context window (capped at {max_tokens:,} tokens, whichever is lower),
-your tool calls will be blocked automatically (except Write/Read/TodoWrite) so
-you can still save a brief handoff. If that happens, write a short handoff file
-(current state, what's done, next steps) and end your turn — the coordinator
-will pick up from there.
+**Context-window heads-up:** your tool calls will be blocked automatically
+(except Write/Read/TodoWrite) once your context usage crosses the pause
+point, so you can still save a brief handoff. On large context windows
+(>= {large_window_tokens:,} tokens) that's a flat {max_tokens:,}-token cap;
+on smaller windows (e.g. Haiku) it's ~{threshold_percent}% of your window
+instead. If that happens, write a short handoff file (current state, what's
+done, next steps) and end your turn — the coordinator will pick up from
+there.
 """
 
     # Usage-pause heads-up (Claude only -- Codex has no hook mechanism).
