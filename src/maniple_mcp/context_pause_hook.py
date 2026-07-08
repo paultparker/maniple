@@ -2,9 +2,10 @@
 
 The hook script is written to disk by `build_stop_hook_settings_file()` in
 iterm_utils.py and invoked by Claude Code as `python3 <path> <threshold>
-<window_tokens>` for every tool call (no matcher). It must remain stdlib-only
-and standalone -- it never imports maniple_mcp, since it runs inside a
-worker's project directory/venv, which may not have this package installed.
+<window_tokens> <max_tokens>` for every tool call (no matcher). It must
+remain stdlib-only and standalone -- it never imports maniple_mcp, since it
+runs inside a worker's project directory/venv, which may not have this
+package installed.
 
 Behavior (see PLAN in the maniple context-pause feature spec):
 - Allowlisted tools (Write, Read, TodoWrite) always pass -- this is the
@@ -17,9 +18,13 @@ Behavior (see PLAN in the maniple context-pause feature spec):
   (Haiku 4.5's real context window as of the 2026-07 model catalog);
   otherwise the configured window_tokens is used as-is (1M by default,
   matching current Opus/Sonnet/Fable models). See _effective_window().
-- If used / effective_window >= threshold, deny the tool call via
-  PreToolUse JSON output on stdout, with a reason instructing the worker to
-  write a handoff and end its turn.
+- The effective token limit is min(threshold * effective_window, max_tokens)
+  -- a flat threshold fraction is too generous on today's 1M-token windows
+  (75% would be 750K tokens), so max_tokens caps the absolute token count.
+  See _effective_limit().
+- If used >= effective_limit, deny the tool call via PreToolUse JSON output
+  on stdout, with a reason instructing the worker to write a handoff and end
+  its turn.
 - Fail open (exit 0, no output) on ANY error -- a broken hook must never
   block a worker.
 """
@@ -41,7 +46,7 @@ configured threshold, except for a small allowlist of tools that let it
 write a handoff file and end its turn gracefully. Fails open (allows the
 call) on any error -- this hook must never break a worker.
 
-Invoked as: python3 context_pause_hook.py <threshold> <window_tokens>
+Invoked as: python3 context_pause_hook.py <threshold> <window_tokens> <max_tokens>
 Reads the Claude Code PreToolUse hook JSON payload from stdin.
 """
 import json
@@ -149,10 +154,24 @@ def _effective_window(window_tokens, model):
     return window_tokens
 
 
+def _effective_limit(threshold, window, max_tokens):
+    """Return the effective token count that triggers a pause.
+
+    A flat threshold fraction of the window is too generous on today's
+    1M-token windows (75% would be 750K tokens, far past the point a
+    worker can still usefully write a handoff), so the absolute token
+    count is capped at max_tokens regardless of window size. On a smaller
+    window (e.g. Haiku's real 200K), the threshold fraction alone stays
+    below the cap and controls as before.
+    """
+    return min(threshold * window, max_tokens)
+
+
 def main(argv):
     try:
         threshold = float(argv[0])
         window_tokens = int(argv[1])
+        max_tokens = int(argv[2])
     except (IndexError, ValueError):
         return 0
 
@@ -183,14 +202,14 @@ def main(argv):
     if window <= 0:
         return 0
 
-    fraction = used / window
-    if fraction < threshold:
+    effective_limit = _effective_limit(threshold, window, max_tokens)
+    if effective_limit <= 0 or used < effective_limit:
         return 0
 
-    percent = round(fraction * 100)
-    threshold_percent = round(threshold * 100)
+    percent = round(used / window * 100)
     reason = (
-        f"Context usage is at {percent}% (>= {threshold_percent}% threshold). "
+        f"Context usage is at {percent}% of your context window "
+        f"({used} tokens, limit {round(effective_limit)} tokens). "
         "Pause all work now: use Write to save a brief handoff file (current "
         "state, what's done, next steps) then END YOUR TURN and await the "
         "manager."

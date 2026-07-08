@@ -66,10 +66,17 @@ def _run_hook(
     tool_name: str,
     threshold: float = 0.75,
     window_tokens: int = 200000,
+    max_tokens: int = 250000,
 ) -> subprocess.CompletedProcess:
     payload = {"transcript_path": str(transcript_path), "tool_name": tool_name}
     return subprocess.run(
-        [sys.executable, str(hook_script), str(threshold), str(window_tokens)],
+        [
+            sys.executable,
+            str(hook_script),
+            str(threshold),
+            str(window_tokens),
+            str(max_tokens),
+        ],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -144,6 +151,160 @@ class TestThresholdEnforcement:
         result = _run_hook(hook_script, transcript, "Bash", threshold=0.75, window_tokens=200000)
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestMaxTokensCap:
+    """The effective limit is min(threshold * window, max_tokens) -- on
+    large (1M+) windows the absolute token cap binds well before the raw
+    threshold fraction would, so a worker is paused at a sane token count
+    regardless of how large its configured window is."""
+
+    def test_large_window_allows_just_under_cap(self, hook_script, tmp_path):
+        # 1M window, 0.75 threshold -> raw fraction would allow up to 750K,
+        # but max_tokens=250000 caps it well below that.
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 249_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_large_window_denies_at_cap(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 250_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_small_window_still_bound_by_threshold_fraction_under_cap(
+        self, hook_script, tmp_path
+    ):
+        # 200K window, 0.75 threshold -> 150K, well under the 250K cap, so
+        # the cap never binds and the threshold fraction alone controls.
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 149_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=200_000,
+            max_tokens=250_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 150_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=200_000,
+            max_tokens=250_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_custom_max_tokens_is_configurable(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 99_999})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=100_000,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 100_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=100_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_haiku_window_capped_by_threshold_not_max_tokens(self, hook_script, tmp_path):
+        """Haiku's real 200K window (from _effective_window) yields a 150K
+        threshold-fraction limit, still well under the 250K default cap."""
+        transcript = _write_transcript(
+            tmp_path,
+            [_assistant_entry({"input_tokens": 160_000}, model="claude-haiku-4-5-20260101")],
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+        )
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_deny_reason_mentions_effective_token_limit(self, hook_script, tmp_path):
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 260_000})]
+        )
+        result = _run_hook(
+            hook_script,
+            transcript,
+            "Bash",
+            threshold=0.75,
+            window_tokens=1_000_000,
+            max_tokens=250_000,
+        )
+        output = json.loads(result.stdout)
+        reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "260000" in reason
+        assert "250000" in reason
+
+    def test_missing_max_tokens_argv_fails_open(self, hook_script, tmp_path):
+        """Only threshold + window_tokens supplied (old 2-arg invocation) --
+        the script now requires a 3rd argv, so this fails open rather than
+        crashing or misbehaving."""
+        transcript = _write_transcript(
+            tmp_path, [_assistant_entry({"input_tokens": 999_999})]
+        )
+        payload = {"transcript_path": str(transcript), "tool_name": "Bash"}
+        result = subprocess.run(
+            [sys.executable, str(hook_script), "0.75", "1000000"],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
 
 
 class TestModelAwareWindow:
