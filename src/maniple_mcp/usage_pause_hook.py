@@ -20,8 +20,12 @@ Behavior:
   ALWAYS denied, regardless of usage level -- a session must not be able to
   grant itself an override. Fails open (skips this check) if the relevant
   path field is absent/unparseable.
-- Allowlisted tools (Write, Read, TodoWrite) always pass otherwise -- the
-  "graceful wrap-up" escape hatch so a worker can save a handoff file.
+- Allowlisted tools (Write, Read, TodoWrite, plus the scheduling tools
+  ScheduleWakeup/CronCreate/CronList/CronDelete) always pass otherwise --
+  the "graceful wrap-up" escape hatch so a worker can save a handoff file
+  AND schedule its own continuation for after the 5-hour window resets.
+  Scheduling tools must never be blocked at any rung: unlike context-pause,
+  waiting actually helps here, since the usage window rolls over.
 - Escalating override ladder: reads `<override_dir>/<scope>.json`
   ({"threshold": 0.90|0.95|null, "expires_at": <epoch>}). If valid and not
   expired: threshold null means unlimited (allow, no further check);
@@ -53,11 +57,23 @@ from ._hook_script_shared import FAIL_OPEN_MAIN_BLOCK
 HOOK_SCRIPT_FILENAME = "usage_pause_hook.py"
 
 # Tools that remain allowed even once a worker is over the usage-pause
-# threshold, so it can still write a brief handoff before ending its turn.
+# threshold: enough to write a brief handoff before ending its turn, and to
+# schedule a continuation (ScheduleWakeup/Cron*) for after the 5-hour window
+# resets -- scheduling must work at every rung, since waiting out the reset
+# is the whole point of this pause (unlike context-pause, where a scheduled
+# wake would just resume the same over-limit session).
 # Exposed for tests; also duplicated verbatim *inside* the emitted script's
 # own ALLOWLISTED_TOOLS set below, since the running script can't import
 # this module.
-ALLOWLISTED_TOOLS = ("Write", "Read", "TodoWrite")
+ALLOWLISTED_TOOLS = (
+    "Write",
+    "Read",
+    "TodoWrite",
+    "ScheduleWakeup",
+    "CronCreate",
+    "CronList",
+    "CronDelete",
+)
 
 # Write-capable tools checked by the anti-loophole guard, and the tool_input
 # field each one uses for its target path.
@@ -75,7 +91,8 @@ _HOOK_SCRIPT_BODY = '''#!/usr/bin/env python3
 Blocks a worker's tool calls once the ACCOUNT's rolling 5-hour usage window
 (the Claude plan's session credit quota, NOT context) crosses an escalating
 threshold ladder, except for a small allowlist of tools that let it write a
-handoff file and end its turn gracefully. Fails open (allows the call) on
+handoff file, schedule its own continuation for after the window resets,
+and end its turn gracefully. Fails open (allows the call) on
 any error -- this hook must never break a worker, and stale/missing data
 must never pause one.
 
@@ -102,7 +119,18 @@ import os
 import sys
 import time
 
-ALLOWLISTED_TOOLS = {"Write", "Read", "TodoWrite"}
+ALLOWLISTED_TOOLS = {
+    "Write",
+    "Read",
+    "TodoWrite",
+    # Scheduling tools stay usable at every rung: the 5-hour usage window
+    # resets, so a paused session must always be able to schedule its own
+    # continuation for after the reset.
+    "ScheduleWakeup",
+    "CronCreate",
+    "CronList",
+    "CronDelete",
+}
 
 ANTI_LOOPHOLE_PATH_FIELDS = {
     "Write": "file_path",
@@ -277,8 +305,10 @@ def main(argv):
         f"session window (>= {round(threshold_percent)}% threshold)."
         f"{reset_note}{continue_hint} "
         "Pause all work now: use Write to save a brief handoff file (current "
-        "state, what's done, next steps) then END YOUR TURN and await the "
-        "manager."
+        "state, what's done, next steps). Scheduling tools (ScheduleWakeup, "
+        "CronCreate/CronList/CronDelete) remain available, so you may "
+        "schedule a continuation for after the reset. Then END YOUR TURN "
+        "and await the manager."
     )
     print(json.dumps({
         "hookSpecificOutput": {

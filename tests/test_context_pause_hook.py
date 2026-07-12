@@ -150,6 +150,16 @@ class TestAllowlist:
         """Sanity check: an unrelated tool name is not accidentally allowlisted."""
         assert "Bash" not in ALLOWLISTED_TOOLS
 
+    @pytest.mark.parametrize(
+        "tool_name", ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"]
+    )
+    def test_scheduling_tools_deliberately_not_allowlisted(self, tool_name):
+        """Unlike usage-pause, waiting never fixes a full context window --
+        a scheduled wake would resume the same over-limit session. The only
+        useful continuation is a handoff into a NEW session, so scheduling
+        tools stay blocked here (decided 2026-07-12)."""
+        assert tool_name not in ALLOWLISTED_TOOLS
+
 
 class TestThresholdEnforcement:
     def test_over_threshold_denies_non_allowlisted_tool(self, hook_script, tmp_path):

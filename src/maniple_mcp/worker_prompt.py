@@ -254,7 +254,9 @@ there.
         extra_sections += f"""
 **Plan usage heads-up:** once your account's 5-hour session usage hits
 ~{usage_threshold_percent}%, your tool calls will be blocked automatically
-(except Write/Read/TodoWrite) so you can still save a brief handoff. If that
+(except Write/Read/TodoWrite and the scheduling tools
+ScheduleWakeup/CronCreate/CronList/CronDelete) so you can still save a brief
+handoff and schedule a continuation for after the window resets. If that
 happens, write a short handoff file (current state, what's done, next steps)
 and end your turn — the coordinator will pick up from there. The coordinator
 can grant you a continue past this threshold (an escalating override ladder)

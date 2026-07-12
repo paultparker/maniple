@@ -209,6 +209,12 @@ class TestUsagePauseHeadsUp:
         prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
         assert "Plan usage heads-up" not in prompt
 
+    def test_claude_prompt_mentions_scheduling_tools_stay_available(self):
+        """The heads-up tells the worker it can still schedule its own
+        continuation (ScheduleWakeup/Cron*) while usage-paused."""
+        prompt = generate_worker_prompt("test", "Worker", agent_type="claude")
+        assert "ScheduleWakeup" in prompt
+
     def test_codex_prompt_has_no_heads_up(self):
         """Codex workers have no hook mechanism, so no heads-up paragraph."""
         prompt = generate_worker_prompt("test", "Worker", agent_type="codex")

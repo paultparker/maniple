@@ -110,6 +110,29 @@ class TestAllowlist:
     def test_non_allowlisted_tool_name_not_confused(self):
         assert "Bash" not in ALLOWLISTED_TOOLS
 
+    @pytest.mark.parametrize(
+        "tool_name", ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"]
+    )
+    def test_scheduling_tools_allowed_at_any_usage(self, hook_script, tmp_path, tool_name):
+        """The 5-hour usage window resets, so a paused session must always be
+        able to schedule its own continuation -- even at 100% usage with the
+        highest override rung active."""
+        assert tool_name in ALLOWLISTED_TOOLS
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(100.0))
+        override_dir = tmp_path / "override"
+        _write_override(
+            override_dir, _DEFAULT_SCOPE, threshold=0.95, expires_at=time.time() + 3600
+        )
+        result = _run_hook(
+            hook_script,
+            tool_name,
+            state_file=state_file,
+            threshold=0.95,
+            override_dir=override_dir,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
 
 class TestThresholdEnforcement:
     def test_over_threshold_denies_with_percent_and_5hour_in_reason(self, hook_script, tmp_path):

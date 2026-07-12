@@ -32,7 +32,7 @@ uv run pytest tests/test_tmux_backend.py
 uv run pytest -v
 ```
 
-If you get "pytest not found" or similar errors, run `uv sync` first to install dependencies.
+If you get "pytest not found" or similar errors, run `uv sync --group dev` first to install dependencies (the dev group includes pytest).
 
 **DO NOT use:** `pytest`, `python -m pytest`, or `python3 -m pytest` — these will fail.
 
@@ -49,78 +49,6 @@ Changes that touch terminal backend code **MUST** include one of:
 - An explicit, documented exception (in the PR description) that includes:
   - Rationale for why parity is not feasible right now
   - A follow-up issue to restore parity (Pebbles or GitHub issue link)
-
-## Project Structure
-
-```
-src/maniple_mcp/
-├── server.py                  # FastMCP server entry point, registers all tools
-├── registry.py                # Worker tracking (ManagedSession, SessionRegistry)
-├── session_state.py           # JSONL parsing for Claude/Codex conversation logs
-├── config.py                  # Config schema + loading (~/.maniple/config.json)
-├── config_cli.py              # `maniple config` CLI subcommands
-├── idle_detection.py          # Stop hook completion detection
-├── logging_setup.py           # Logging configuration
-├── terminal_backends/         # Terminal backend implementations
-│   ├── base.py                # Backend interface
-│   ├── tmux.py                # tmux backend (primary, cross-platform)
-│   └── iterm.py               # iTerm2 backend (macOS)
-├── cli_backends/              # Agent CLI backends
-│   ├── base.py                # CLI backend interface
-│   ├── claude.py              # Claude Code worker invocation
-│   └── codex.py               # OpenAI Codex worker invocation
-├── iterm_utils.py             # Low-level iTerm2 API wrappers
-├── issue_tracker/             # Issue tracker abstraction + detection
-├── schemas/                   # Structured output schemas (e.g. codex)
-├── profile.py                 # iTerm2 profile/theme management
-├── colors.py                  # Golden ratio tab color generation
-├── formatting.py              # Title/badge formatting utilities
-├── names.py                   # Worker name generation (themed name sets)
-├── worker_prompt.py           # Worker system prompt generation
-├── context_pause_hook.py      # Generates the context-pause PreToolUse hook script (Claude only)
-├── usage_pause_hook.py        # Generates the usage-pause PreToolUse hook script (Claude only; 5-hour account window)
-├── worktree.py                # Git worktree management
-├── subprocess_cache.py        # Cached subprocess calls
-├── tools/                     # MCP tool implementations (one per file)
-│   ├── spawn_workers.py       # Create worker sessions
-│   ├── list_workers.py        # List managed workers
-│   ├── examine_worker.py      # Get detailed worker status
-│   ├── message_workers.py     # Send prompts to workers
-│   ├── check_idle_workers.py  # Check if workers are idle
-│   ├── wait_idle_workers.py   # Wait for workers to finish
-│   ├── wait_for_worker.py     # Wait for a worker (idle | waiting_input | stuck)
-│   ├── answer_worker_question.py # Answer a worker's pending AskUserQuestion
-│   ├── list_blocked_workers.py   # List workers blocked on input
-│   ├── read_worker_logs.py    # Get conversation history
-│   ├── annotate_worker.py     # Add coordinator notes
-│   ├── close_workers.py       # Terminate workers
-│   ├── discover_workers.py    # Find orphaned tmux/iTerm sessions
-│   ├── adopt_worker.py        # Import orphaned sessions
-│   ├── prune_recovered_workers.py # Drop unrecoverable workers from registry
-│   ├── poll_worker_changes.py # Read worker lifecycle event log
-│   ├── worker_events.py       # Worker event types/log
-│   ├── list_worktrees.py      # List git worktrees
-│   └── issue_tracker_help.py  # Issue tracker quick reference (Beads/Pebbles)
-└── utils/                     # Shared utilities
-    ├── constants.py           # Shared constants
-    ├── env_vars.py            # Env var resolution with fallbacks
-    ├── errors.py              # Error response helpers
-    └── worktree_detection.py  # Worktree path detection
-
-commands/                      # Slash commands for Claude Code
-scripts/                       # Utility scripts
-tests/                         # Pytest unit tests
-```
-
-## Makefile Targets
-
-```bash
-make help                  # Show available targets
-make install-commands      # Install slash commands to ~/.claude/commands/
-make install-commands-force # Overwrite existing commands
-make test                  # Run pytest
-make sync                  # Sync dependencies
-```
 
 ## Key Modules
 
@@ -165,19 +93,11 @@ Where `{project-slug}` = project path with `/` → `-` (e.g., `/Users/josh/code`
 ### Idle Detection (Stop Hooks)
 Workers are spawned with a stop hook that fires when Claude finishes responding. The hook writes a marker to the JSONL file that `idle_detection.py` watches for. This is the primary completion detection mechanism.
 
-### Context-Pause (Claude Code workers only)
-`build_stop_hook_settings_file()` also injects a no-matcher PreToolUse hook (governed by `config.context_pause`, on by default) that blocks a worker's tool calls once its context usage crosses an effective limit, except for `Write`/`Read`/`TodoWrite` — enough to write a handoff and end its turn. The effective limit is a **step function** of the (Haiku-adjusted) effective window, not a flat threshold fraction of it: if the window is `>= large_window_tokens` (default `300_000`), it counts as "large" and the flat `max_tokens` cap applies (default `250_000`) — `threshold` has no effect at all in this regime (a flat 75% of a 1M-token window would be 750K tokens, far past the point a worker can still usefully write a handoff; note this also means a 300K window pauses at a flat 250K, not `0.75 * 300000 = 225000`). Otherwise (`window < large_window_tokens`) the window counts as "small" and `threshold * window` controls instead. The 1M window default matches current Opus/Sonnet/Fable models (2026-07 catalog) — comfortably over the 300K boundary, so it always uses the flat cap; the hook script detects a Haiku model id in the transcript (case-insensitive substring match) and caps the effective window at Haiku 4.5's real 200K there instead — under the 300K boundary, so Haiku pauses at 75% of 200K (150K) rather than the flat cap. No full model map. The hook script itself is generated by `context_pause_hook.py` (stdlib-only, self-contained — it must not import `maniple_mcp` since it runs standalone in the worker's shell), is invoked as `python3 context_pause_hook.py <threshold> <window_tokens> <max_tokens> <large_window_tokens>`, and fails open on any error. **A Task/Agent subagent's own context is bounded too**, by the same step function: when the PreToolUse payload carries an `agent_id` (present only for a subagent's own tool call), the hook derives and scans the subagent's own transcript file (`<dir>/<parent-stem>/subagents/agent-<agent_id>.jsonl`, keyed on `agentId` rather than the sidechain skip, since every entry there is `isSidechain: true`) instead of the parent's — verified empirically 2026-07-08 that `transcript_path` in that payload still points at the parent transcript, not a subagent-specific one. **Codex workers are excluded** — no hook mechanism exists for Codex.
-
-### Usage-Pause (Claude Code workers only)
-Sibling to context-pause but for the ACCOUNT's rolling 5-hour usage window (the Claude plan's session credit quota, not context). `build_stop_hook_settings_file()` injects a second, independent no-matcher PreToolUse hook (governed by `config.usage_pause`, on by default at 75%) generated by `usage_pause_hook.py`. Hooks don't receive `rate_limits` natively, so the script reads `rate_limits.five_hour.used_percentage` from `usage_pause.state_file` (default `/tmp/cc-statusline-input.json`) — a cache the user's statusline command must write its stdin JSON to on every update; workers inherit that statusline so the file stays fresh. Fails open if the cache is missing, unreadable, or older than `max_stale_seconds`. `rate_limits` is only present for Pro/Max OAuth logins — absent (fail-open, no-op) under API-key auth. **Codex workers are excluded** — no hook mechanism exists for Codex.
-
-**Escalating override ladder:** a paused session can be granted a continue that climbs base → 90% → 95% → unlimited, one rung per grant, expiring at the account's 5-hour window reset. Worker base is 75%, global base is 80%. Backed by the shared `usage_override.py` module (atomic JSON read/advance/clear at `~/.maniple/usage_override/<scope>.json`, scope = a worker's `session_id` or the literal `"global"`) — the single source of truth behind both the MCP tools and the CLI subcommands below. The hook's anti-loophole check denies any `Write`/`Edit`/`MultiEdit`/`NotebookEdit` targeting a path inside `override_dir`, so a session can never grant itself an override.
-- MCP tools (`src/maniple_mcp/tools/override_usage_pause.py`, `clear_usage_override.py`): `override_usage_pause(workers)` advances the ladder — **its docstring (the tool description the coordinator LLM reads) states it may only be called after the human user gives explicit permission for that specific continue; the coordinator must never call it on its own judgment**, and must relay the pause to the user and ask first. `clear_usage_override(workers)` reverts to base (also accepts the literal `"global"`); no approval gate needed since it only tightens.
-- CLI (`server.py::main()`, logic in `usage_override_cli.py`): `maniple usage-override` advances the *global* rung (no args), or `--status` / `--clear`. `maniple install-global-usage-guard [--threshold 0.80]` writes `~/.claude/hooks/usage-pause-global.py` and prints (never writes) the `PreToolUse` snippet for `~/.claude/settings.json`.
-- **MANIPLE_WORKER exclusion:** a globally-installed hook must not double-pause a worker (which already has its own scoped hook) — the generated script no-ops immediately when `scope == "global"` and env `MANIPLE_WORKER` is set. `MANIPLE_WORKER=1` is injected into every worker launch (both backends) by `AgentCLI.build_full_command()` in `cli_backends/base.py`.
+### Context-Pause & Usage-Pause (Claude Code workers only; Codex excluded)
+Two independent no-matcher PreToolUse hooks injected by `build_stop_hook_settings_file()`: **context-pause** (on by default) blocks a worker's tool calls — except `Write`/`Read`/`TodoWrite`, enough to write a handoff — once its context crosses a step-function limit (flat 250K cap for windows ≥300K; `threshold × window` below that; Haiku detected and capped at its real 200K window; subagents bounded via their own transcripts). **usage-pause** (on by default at 75%) does the same for the ACCOUNT's rolling 5-hour plan quota, read from the statusline cache file — but additionally allowlists the scheduling tools (`ScheduleWakeup`/`CronCreate`/`CronList`/`CronDelete`) at every rung, since the quota window resets and a paused session must be able to schedule its own continuation — with an escalating override ladder (base → 90% → 95% → unlimited) that only advances with explicit human permission — via the `override_usage_pause` MCP tool or the `maniple usage-override` CLI. Both fail open on any error. Full contracts, thresholds, and verified gotchas: `.claude/rules/pause-hooks.md` (auto-loads when working on the pause/override code).
 
 ### Layout Options
-These pane layouts apply to the **iTerm2 backend only**. The **tmux backend ignores `layout`** and creates one new window per worker in a per-project tmux session (no pane packing / no auto slot-reuse).
+These pane layouts apply to the **iTerm2 backend only** (requires iTerm2's Python API to be enabled). The **tmux backend ignores `layout`** and creates one new window per worker in a per-project tmux session (no pane packing / no auto slot-reuse).
 - `single`: 1 pane, full window (main)
 - `vertical`: 2 panes side by side (left, right)
 - `horizontal`: 2 panes stacked (top, bottom)
@@ -185,19 +105,6 @@ These pane layouts apply to the **iTerm2 backend only**. The **tmux backend igno
 - `triple_vertical`: 3 panes side by side (left, middle, right)
 
 Note: the 1–4 workers-per-`spawn_workers`-call cap is enforced for **both** backends (input validation), but on tmux that's an artificial per-call limit, not a window constraint — call `spawn_workers` again to add more windows to the same session.
-
-## Running & Testing
-
-```bash
-# Sync dependencies (with dev tools)
-uv sync --group dev
-
-# Run tests
-uv run --group dev pytest
-
-# Run server directly (debugging)
-uv run python -m maniple_mcp
-```
 
 ## Pull Requests
 
@@ -210,7 +117,3 @@ Use this checklist in PR descriptions:
 - [ ] `uv run pytest` passes
 ```
 
-## Requirements
-- Python 3.11+
-- uv package manager
-- A terminal backend: tmux (macOS/Linux) **or** iTerm2 (macOS, Python API enabled)
