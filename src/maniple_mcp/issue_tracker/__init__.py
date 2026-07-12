@@ -11,8 +11,6 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ..utils.env_vars import get_env_with_fallback
-
 if TYPE_CHECKING:
     from maniple_mcp.config import ClaudeTeamConfig
 
@@ -116,6 +114,10 @@ def detect_issue_tracker(
         or detected.
     """
     # Priority 1: Environment variable override.
+    # Lazy import: utils.constants imports this package at module load, so a
+    # module-level import here would be circular (like the config import below).
+    from ..utils.env_vars import get_env_with_fallback
+
     env_override = get_env_with_fallback(
         ISSUE_TRACKER_ENV_VAR,
         ISSUE_TRACKER_ENV_VAR_FALLBACK,
