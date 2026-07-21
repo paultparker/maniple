@@ -56,3 +56,6 @@ htmlcov/
 
 # Beads local state (not synced)
 .beads/
+
+# Session handoffs (personal content — repo fork is public; synced via Dropbox, not git)
+plans/
