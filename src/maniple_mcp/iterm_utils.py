@@ -660,6 +660,9 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
     )
 
     settings: dict = {
+        # Workers are already visible/controlled via their tmux/iTerm pane —
+        # don't also register them as separate Remote Control sessions.
+        "remoteControlAtStartup": False,
         "hooks": {
             "Stop": [{
                 "hooks": [{
