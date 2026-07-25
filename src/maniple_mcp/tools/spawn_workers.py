@@ -19,12 +19,14 @@ if TYPE_CHECKING:
 from ..cli_backends import get_cli_backend
 from ..config import ConfigError, default_config, load_config
 from ..colors import generate_tab_color
+from ..coordinator_identity import get_coordinator_identity
 from ..formatting import format_badge_text, format_session_title
 from ..names import pick_names_for_count
 from ..profile import apply_appearance_colors
 from ..registry import SessionStatus
 from ..terminal_backends import ItermBackend, MAX_PANES_PER_TAB
 from ..utils import HINTS, error_response, get_env_with_fallback, get_worktree_tracker_dir
+from ..worker_manifest import write_worker_manifest
 from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
 from ..worktree import WorktreeError, create_local_worktree
 
@@ -663,6 +665,8 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
 
             # Start agent in all panes (both Claude and Codex)
             import asyncio
+            models: list[str | None] = [None] * worker_count
+
             async def start_agent_for_worker(index: int) -> None:
                 session = pane_sessions[index]
                 project_path = resolved_paths[index]
@@ -684,6 +688,18 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 if agent_type == "codex":
                     env = (env or {}) | {"CI": "1"}
 
+                # Breadcrumb the coordinator's identity into the worker's env
+                # (MANIPLE_COORDINATOR_* vars) so a zombie-worker report can
+                # still identify/reconnect to the coordinator even after it
+                # has exited. Both backends funnel through the same env ->
+                # build_full_command choke point, so this covers both
+                # (backend parity by construction). Omitted entirely when
+                # unknown -- never merge an empty dict in, so env stays None
+                # for workers with no other env vars either.
+                coordinator_env_vars = get_coordinator_identity().to_env_vars()
+                if coordinator_env_vars:
+                    env = (env or {}) | coordinator_env_vars
+
                 cli = get_cli_backend(agent_type)
                 stop_hook_marker_id = marker_id if agent_type == "claude" else None
                 # Use config default when not explicitly set
@@ -698,6 +714,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 plugin_dir = worker_config.get("plugin_dir")
                 # Resolve model: per-worker > defaults.model > None (omit --model entirely)
                 model = worker_config.get("model") or getattr(defaults, "model", None)
+                models[index] = model
                 await backend.start_agent_in_session(
                     handle=session,
                     cli=cli,
@@ -730,6 +747,35 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     managed.worktree_path = worktree_paths[i]
                     managed.main_repo_path = main_repo_paths[i]
                 managed_sessions.append(managed)
+
+            # Best-effort: persist a coordinator-identity manifest per worker
+            # (~/.maniple/workers/<worker_session_id>.json). write_worker_
+            # manifest already guarantees it never raises, but sessions are
+            # already spawned/registered by this point -- guard the call
+            # site too so a hypothetical regression there can't turn an
+            # already-successful spawn into a reported failure (the whole
+            # tool body is wrapped in one try/except that maps any
+            # exception to error_response, even post-registration).
+            try:
+                coordinator_identity = get_coordinator_identity()
+                for i, managed in enumerate(managed_sessions):
+                    write_worker_manifest(
+                        worker_session_id=managed.session_id,
+                        name=managed.name or managed.session_id,
+                        agent_type=managed.agent_type,
+                        terminal_id=str(managed.terminal_id) if managed.terminal_id else "",
+                        project_path=managed.project_path,
+                        worktree_path=(
+                            str(managed.worktree_path) if managed.worktree_path else None
+                        ),
+                        main_repo_path=(
+                            str(managed.main_repo_path) if managed.main_repo_path else None
+                        ),
+                        model=models[i],
+                        coordinator=coordinator_identity,
+                    )
+            except Exception as e:
+                logger.debug(f"Worker manifest write failed (best-effort): {e}")
 
             # Send marker messages for JSONL correlation (Claude + Codex)
             for i, managed in enumerate(managed_sessions):

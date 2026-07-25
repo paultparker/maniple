@@ -182,6 +182,57 @@ class TestClaudeCLI:
             assert "BAZ=qux" in cmd
             assert cmd.endswith("claude")
 
+    def test_build_full_command_quotes_env_values_with_spaces(self):
+        """Env export values containing spaces must be shell-quoted -- the
+        unquoted join at base.py used to silently corrupt the command
+        (e.g. real tmux session names look like '⚙ mac-perf--🔄 working-
+        maniple-0724-1019')."""
+        import shlex
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("MANIPLE_COMMAND", None)
+            os.environ.pop("CLAUDE_TEAM_COMMAND", None)
+            cli = ClaudeCLI()
+            value = "session name with spaces"
+            cmd = cli.build_full_command(env_vars={"MANIPLE_COORDINATOR_TMUX": value})
+            assert f"MANIPLE_COORDINATOR_TMUX={shlex.quote(value)}" in cmd
+            # The naive unquoted join would have split this into multiple
+            # shell tokens -- confirm the key=value pair round-trips as ONE
+            # token when a shell (re-)parses it.
+            tokens = shlex.split(cmd)
+            assert f"MANIPLE_COORDINATOR_TMUX={value}" in tokens
+
+    def test_build_full_command_quotes_env_values_with_emoji_and_spaces(self):
+        """Real tmux session names in this environment carry emoji AND
+        spaces together -- the exact combination that broke unquoted export
+        joins."""
+        import shlex
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("MANIPLE_COMMAND", None)
+            os.environ.pop("CLAUDE_TEAM_COMMAND", None)
+            cli = ClaudeCLI()
+            value = "⚙ mac-perf--🔄 working-maniple-0724-1019:1.0"
+            cmd = cli.build_full_command(env_vars={"MANIPLE_COORDINATOR_TMUX": value})
+            assert f"MANIPLE_COORDINATOR_TMUX={shlex.quote(value)}" in cmd
+            tokens = shlex.split(cmd)
+            assert f"MANIPLE_COORDINATOR_TMUX={value}" in tokens
+
+    def test_build_full_command_quotes_all_env_values_not_just_new_ones(self):
+        """The quoting fix applies to every exported value, including
+        existing callers' arbitrary env_vars -- not just the new
+        coordinator-identity vars."""
+        import shlex
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("MANIPLE_COMMAND", None)
+            os.environ.pop("CLAUDE_TEAM_COMMAND", None)
+            cli = ClaudeCLI()
+            cmd = cli.build_full_command(env_vars={"FOO": "has space"})
+            assert f"FOO={shlex.quote('has space')}" in cmd
+            tokens = shlex.split(cmd)
+            assert "FOO=has space" in tokens
+
     def test_build_full_command_always_sets_maniple_worker_env(self):
         """Every worker launch is marked with MANIPLE_WORKER=1 -- both
         terminal backends funnel through build_full_command, so this is the
