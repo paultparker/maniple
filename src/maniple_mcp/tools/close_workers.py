@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from ..iterm_utils import CODEX_PRE_ENTER_DELAY
 from ..registry import SessionRegistry, SessionStatus
 from ..session_state import PENDING_DIR
+from ..worker_manifest import stamp_worker_closed
 from ..worktree import WorktreeError, remove_worktree
 from ..utils import error_response, HINTS
 
@@ -117,6 +118,11 @@ async def _close_single_worker(
         except OSError:
             pass
 
+        # Best-effort: stamp closed_at on the worker's manifest (kept, not
+        # deleted -- cheap history that lets a zombie report distinguish
+        # closed-cleanly from vanished).
+        stamp_worker_closed(session.session_id)
+
         return {
             "success": True,
             "worktree_cleaned": worktree_cleaned,
@@ -131,6 +137,9 @@ async def _close_single_worker(
             (PENDING_DIR / f"{session.session_id}.json").unlink(missing_ok=True)
         except OSError:
             pass
+        # Best-effort: stamp closed_at even on the failure path -- the
+        # worker is being torn down from the registry regardless.
+        stamp_worker_closed(session.session_id)
         return {
             "success": True,
             "warning": f"Session removed but cleanup may be incomplete: {e}",
