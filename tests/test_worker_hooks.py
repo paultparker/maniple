@@ -490,3 +490,90 @@ def test_iterm_path_forwards_trust_project_mcp(trust):
             )
         )
     build_mock.assert_called_once_with("m2", trust_project_mcp=trust)
+
+
+# Coordinator-identity env-var plumbing: spawn_workers merges
+# MANIPLE_COORDINATOR_* vars into the `env` dict it passes to
+# start_agent_in_session, which both backends already funnel unchanged into
+# cli.build_full_command(env_vars=env) -- these tests exercise that `env`
+# param end to end (through the REAL ClaudeCLI, not a mock) for both
+# backends, confirming the shlex-quoting fix actually protects values with
+# spaces and emoji once they reach the shell command each backend sends.
+
+
+def _coordinator_env_vars() -> dict:
+    return {
+        "MANIPLE_COORDINATOR_TMUX": "⚙ mac-perf--🔄 working-maniple-0724-1019:1.0",
+        "MANIPLE_COORDINATOR_SESSION_ID": "sess-with space",
+    }
+
+
+def test_tmux_backend_env_reaches_command_with_shlex_quoting():
+    import shlex
+
+    from maniple_mcp.cli_backends import ClaudeCLI
+    from maniple_mcp.terminal_backends.tmux import TmuxBackend
+
+    backend = TmuxBackend()
+    captured = {}
+
+    async def fake_send_prompt(handle, cmd, submit=True):
+        captured["cmd"] = cmd
+
+    with patch(
+        "maniple_mcp.iterm_utils.build_stop_hook_settings_file",
+        return_value="/tmp/worker-env1.json",
+    ), patch.object(
+        backend, "_wait_for_shell_ready", AsyncMock(return_value=True)
+    ), patch.object(backend, "send_prompt", fake_send_prompt), patch.object(
+        backend, "_wait_for_agent_ready", AsyncMock(return_value=True)
+    ):
+        asyncio.run(
+            backend.start_agent_in_session(
+                handle=MagicMock(),
+                cli=ClaudeCLI(),
+                project_path="/tmp/proj",
+                env=_coordinator_env_vars(),
+            )
+        )
+
+    tokens = shlex.split(captured["cmd"])
+    assert (
+        "MANIPLE_COORDINATOR_TMUX=⚙ mac-perf--🔄 working-maniple-0724-1019:1.0" in tokens
+    )
+    assert "MANIPLE_COORDINATOR_SESSION_ID=sess-with space" in tokens
+
+
+def test_iterm_path_env_reaches_command_with_shlex_quoting():
+    import shlex
+
+    from maniple_mcp import iterm_utils
+    from maniple_mcp.cli_backends import ClaudeCLI
+
+    captured = {}
+
+    async def fake_send_prompt(session, cmd):
+        captured["cmd"] = cmd
+
+    with patch(
+        "maniple_mcp.iterm_utils.build_stop_hook_settings_file",
+        return_value="/tmp/worker-env2.json",
+    ), patch(
+        "maniple_mcp.iterm_utils.wait_for_shell_ready", AsyncMock(return_value=True)
+    ), patch(
+        "maniple_mcp.iterm_utils.wait_for_agent_ready", AsyncMock(return_value=True)
+    ), patch("maniple_mcp.iterm_utils.send_prompt", fake_send_prompt):
+        asyncio.run(
+            iterm_utils.start_agent_in_session(
+                session=MagicMock(),
+                cli=ClaudeCLI(),
+                project_path="/tmp/proj",
+                env=_coordinator_env_vars(),
+            )
+        )
+
+    tokens = shlex.split(captured["cmd"])
+    assert (
+        "MANIPLE_COORDINATOR_TMUX=⚙ mac-perf--🔄 working-maniple-0724-1019:1.0" in tokens
+    )
+    assert "MANIPLE_COORDINATOR_SESSION_ID=sess-with space" in tokens
