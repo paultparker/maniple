@@ -480,3 +480,136 @@ class TestMixedTeamCoordinatorGuidance:
         assert "Mixed team note" not in guidance
         # Should still not show type indicators (not mixed)
         assert "[codex]" not in guidance
+
+
+class TestCoordinatorSection:
+    """Tests for the coordinator-identity section (spec component 4).
+
+    `coordinator` arrives as a plain dict matching the shape of the
+    (sibling-owned) CoordinatorIdentity.to_dict(): pid, pid_start,
+    session_id, project_dir, session_name, window_index, pane_index,
+    iterm_session_id -- all Optional. This module never imports the
+    sibling's coordinator_identity module; it only reads dict keys
+    defensively so it can't raise on a shape mismatch.
+    """
+
+    FULL_COORDINATOR = {
+        "pid": 4242,
+        "pid_start": "Thu Jul 24 09:00:00 2026",
+        "session_id": "coord-abc-123",
+        "project_dir": "/Users/paulparker/Dropbox/code/maniple",
+        "session_name": "maniple-verify-design",
+        "window_index": 3,
+        "pane_index": 0,
+        "iterm_session_id": None,
+    }
+
+    def test_omitted_when_coordinator_is_none(self):
+        """No coordinator info at all -> section omitted entirely."""
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=None
+        )
+        assert "Your coordinator:" not in prompt
+        assert "manifest" not in prompt.lower()
+
+    def test_omitted_when_coordinator_is_empty_dict(self):
+        """An empty/all-None dict is treated the same as no identity."""
+        empty = {
+            "pid": None, "pid_start": None, "session_id": None,
+            "project_dir": None, "session_name": None,
+            "window_index": None, "pane_index": None, "iterm_session_id": None,
+        }
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=empty)
+        assert "Your coordinator:" not in prompt
+
+    def test_full_identity_renders_session_pid_and_tmux(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "Your coordinator:" in prompt
+        assert "coord-abc-123" in prompt
+        assert "4242" in prompt
+        assert "maniple-verify-design" in prompt
+        assert "window 3" in prompt
+
+    def test_full_identity_includes_alive_reconnect_command(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "tmux switch-client -t 'maniple-verify-design'" in prompt
+        assert "tmux attach -t 'maniple-verify-design'" in prompt
+
+    def test_full_identity_includes_dead_resume_command(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert (
+            "cd /Users/paulparker/Dropbox/code/maniple && claude --resume coord-abc-123"
+            in prompt
+        )
+
+    def test_manifest_path_uses_workers_own_session_id(self):
+        prompt = generate_worker_prompt(
+            "worker-xyz", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "~/.maniple/workers/worker-xyz.json" in prompt
+
+    def test_partial_identity_session_id_only_omits_reconnect_commands(self):
+        """Only session_id known -- no pid/tmux/project_dir -- so identity
+        line renders but neither reconnect command can be built."""
+        partial = {"session_id": "coord-solo"}
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "coord-solo" in prompt
+        assert "switch-client" not in prompt
+        assert "claude --resume" not in prompt
+        # Manifest line still present since coordinator info is known.
+        assert "~/.maniple/workers/worker-1.json" in prompt
+
+    def test_partial_identity_missing_project_dir_omits_dead_command_only(self):
+        """pid/tmux/session_id known but no project_dir -- alive command
+        renders (needs only tmux), dead command is omitted (needs project_dir
+        + session_id together)."""
+        partial = {
+            "pid": 99,
+            "session_id": "coord-2",
+            "session_name": "mysession",
+            "window_index": 1,
+        }
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "tmux switch-client -t 'mysession'" in prompt
+        assert "claude --resume" not in prompt
+
+    def test_iterm_only_identity_mentions_iterm_session(self):
+        """No tmux, but an iTerm session id is known."""
+        partial = {"session_id": "coord-3", "iterm_session_id": "ABCD-1234"}
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "ABCD-1234" in prompt
+        assert "switch-client" not in prompt
+
+    def test_unknown_dict_keys_are_ignored_not_raising(self):
+        """Extra/unrecognized keys (e.g. from a future schema bump) must not
+        raise -- this module reads keys defensively."""
+        weird = {"session_id": "coord-4", "some_future_field": "whatever"}
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=weird)
+        assert "coord-4" in prompt
+
+    def test_codex_prompt_also_renders_coordinator_section(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", agent_type="codex",
+            coordinator=self.FULL_COORDINATOR,
+        )
+        assert "Your coordinator:" in prompt
+        assert "coord-abc-123" in prompt
+        assert "tmux switch-client -t 'maniple-verify-design'" in prompt
+
+    def test_codex_prompt_omitted_when_no_coordinator(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", agent_type="codex", coordinator=None
+        )
+        assert "Your coordinator:" not in prompt
+
+    def test_default_coordinator_param_is_none(self):
+        """Existing callers that don't pass coordinator=... keep working
+        (backward compatible default) and get no section."""
+        prompt = generate_worker_prompt("worker-1", "Ringo")
+        assert "Your coordinator:" not in prompt

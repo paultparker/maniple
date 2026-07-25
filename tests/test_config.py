@@ -15,6 +15,7 @@ from maniple_mcp.config import (
     IssueTrackerConfig,
     TerminalConfig,
     UsagePauseConfig,
+    ZombiesConfig,
     default_config,
     load_config,
     save_config,
@@ -79,6 +80,11 @@ class TestDefaultConfig:
         """Default issue tracker override is None."""
         config = default_config()
         assert config.issue_tracker.override is None
+
+    def test_default_zombies(self):
+        """Default zombies config values match spec (2h idle threshold)."""
+        config = default_config()
+        assert config.zombies.idle_threshold_hours == 2
 
 
 class TestSaveConfig:
@@ -356,6 +362,16 @@ class TestJsonValidationErrors:
             "usagepause": {},
         }))
         with pytest.raises(ConfigError, match="Unknown keys in config"):
+            load_config(config_path)
+
+    def test_unknown_zombies_key_raises_error(self, tmp_path: Path):
+        """Unknown keys in zombies section raise ConfigError."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "zombies": {"bad_key": True},
+        }))
+        with pytest.raises(ConfigError, match="Unknown keys in zombies"):
             load_config(config_path)
 
     def test_section_not_object_raises_error(self, tmp_path: Path):
@@ -952,6 +968,11 @@ class TestDataclasses:
         assert config.state_file == "/tmp/cc-statusline-input.json"
         assert config.max_stale_seconds == 600
 
+    def test_zombies_config_defaults(self):
+        """ZombiesConfig has correct defaults."""
+        config = ZombiesConfig()
+        assert config.idle_threshold_hours == 2
+
     def test_claude_team_config_defaults(self):
         """ClaudeTeamConfig has correct nested defaults."""
         config = ClaudeTeamConfig()
@@ -963,3 +984,50 @@ class TestDataclasses:
         assert isinstance(config.issue_tracker, IssueTrackerConfig)
         assert isinstance(config.context_pause, ContextPauseConfig)
         assert isinstance(config.usage_pause, UsagePauseConfig)
+        assert isinstance(config.zombies, ZombiesConfig)
+
+
+class TestZombiesConfig:
+    """Tests for the zombies config section (idle_threshold_hours)."""
+
+    def test_loads_configured_threshold(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "zombies": {"idle_threshold_hours": 4},
+        }))
+        config = load_config(config_path)
+        assert config.zombies.idle_threshold_hours == 4
+
+    def test_roundtrip_preserves_threshold(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        from maniple_mcp.config import ZombiesConfig as _ZombiesConfig
+
+        original = ClaudeTeamConfig(zombies=_ZombiesConfig(idle_threshold_hours=6))
+        save_config(original, config_path)
+        loaded = load_config(config_path)
+        assert loaded.zombies.idle_threshold_hours == 6
+
+    def test_threshold_must_be_positive(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "zombies": {"idle_threshold_hours": 0},
+        }))
+        with pytest.raises(ConfigError, match="idle_threshold_hours"):
+            load_config(config_path)
+
+    def test_threshold_must_be_a_number(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "zombies": {"idle_threshold_hours": "two"},
+        }))
+        with pytest.raises(ConfigError, match="idle_threshold_hours"):
+            load_config(config_path)
+
+    def test_empty_zombies_section_uses_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"version": 1, "zombies": {}}))
+        config = load_config(config_path)
+        assert config.zombies.idle_threshold_hours == 2

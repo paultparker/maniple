@@ -139,6 +139,21 @@ class UsagePauseConfig:
 
 
 @dataclass
+class ZombiesConfig:
+    """`maniple zombies` report thresholds.
+
+    Governs classification in zombies_cli.py: a worker whose coordinator is
+    alive but that has been idle (no JSONL activity) for at least
+    `idle_threshold_hours` is classified "forgotten" rather than "ok". Has
+    no effect on "orphaned" (coordinator dead/defunct/unknown), which is
+    always reported regardless of idle time -- see spec design center:
+    the info matters most when the coordinator is dead or defunct.
+    """
+
+    idle_threshold_hours: float = 2
+
+
+@dataclass
 class ClaudeTeamConfig:
     """Top-level configuration container for claude-team."""
 
@@ -150,6 +165,7 @@ class ClaudeTeamConfig:
     issue_tracker: IssueTrackerConfig = field(default_factory=IssueTrackerConfig)
     context_pause: ContextPauseConfig = field(default_factory=ContextPauseConfig)
     usage_pause: UsagePauseConfig = field(default_factory=UsagePauseConfig)
+    zombies: ZombiesConfig = field(default_factory=ZombiesConfig)
 
 
 def default_config() -> ClaudeTeamConfig:
@@ -237,6 +253,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
             "issue_tracker",
             "context_pause",
             "usage_pause",
+            "zombies",
         },
         "config",
     )
@@ -248,6 +265,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     issue_tracker = _parse_issue_tracker(data.get("issue_tracker"))
     context_pause = _parse_context_pause(data.get("context_pause"))
     usage_pause = _parse_usage_pause(data.get("usage_pause"))
+    zombies = _parse_zombies(data.get("zombies"))
     return ClaudeTeamConfig(
         version=version,
         commands=commands,
@@ -257,6 +275,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
         issue_tracker=issue_tracker,
         context_pause=context_pause,
         usage_pause=usage_pause,
+        zombies=zombies,
     )
 
 
@@ -445,6 +464,33 @@ def _parse_usage_pause(value: object) -> UsagePauseConfig:
     )
 
 
+def _parse_zombies(value: object) -> ZombiesConfig:
+    # Parse `maniple zombies` report thresholds.
+    data = _ensure_dict(value, "zombies")
+    _validate_keys(data, {"idle_threshold_hours"}, "zombies")
+    return ZombiesConfig(
+        idle_threshold_hours=_positive_number(
+            data.get("idle_threshold_hours"),
+            "zombies.idle_threshold_hours",
+            ZombiesConfig.idle_threshold_hours,
+        ),
+    )
+
+
+def _positive_number(value: object, path: str, default: float) -> float:
+    # Validate optional numeric fields that must be strictly positive
+    # (unlike _optional_float, not constrained to the open interval (0, 1) --
+    # this is used for hour counts, which can exceed 1).
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path} must be a number")
+    number = float(value)
+    if number <= 0:
+        raise ConfigError(f"{path} must be greater than 0")
+    return number
+
+
 def _ensure_dict(value: object, path: str) -> dict:
     # Ensure sections are JSON objects, defaulting to empty dicts.
     if value is None:
@@ -547,6 +593,7 @@ __all__ = [
     "TerminalBackend",
     "TerminalConfig",
     "UsagePauseConfig",
+    "ZombiesConfig",
     "IssueTrackerName",
     "CONFIG_DIR",
     "CONFIG_PATH",
