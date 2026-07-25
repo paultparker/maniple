@@ -76,22 +76,30 @@ def _format_coordinator_identity_line(coordinator: dict) -> str:
     """Build the 'Your coordinator: ...' identity sentence from whichever
     fields are known. Reads keys defensively via .get() so an unexpected
     shape (a future schema bump, or a partial capture) never raises --
-    same fail-open philosophy as CoordinatorIdentity itself."""
+    same fail-open philosophy as CoordinatorIdentity itself.
+
+    Real key names (CoordinatorIdentity.to_dict()): tmux_session_name /
+    tmux_window_index, not session_name / window_index -- a worker started
+    from iTerm running tmux can have BOTH tmux_session_name and
+    iterm_session_id set (ITERM_SESSION_ID is inherited into the tmux
+    session's env), so tmux must win when both are present since that's
+    the actually-reachable location.
+    """
     parts = []
     session_id = coordinator.get("session_id")
     pid = coordinator.get("pid")
-    session_name = coordinator.get("session_name")
-    window_index = coordinator.get("window_index")
+    tmux_session_name = coordinator.get("tmux_session_name")
+    tmux_window_index = coordinator.get("tmux_window_index")
     iterm_session_id = coordinator.get("iterm_session_id")
 
     if session_id:
         parts.append(f"Claude session `{session_id}`")
     if pid:
         parts.append(f"PID {pid}")
-    if session_name:
-        tmux_part = f"tmux `{session_name}`"
-        if window_index is not None:
-            tmux_part += f" (window {window_index})"
+    if tmux_session_name:
+        tmux_part = f"tmux `{tmux_session_name}`"
+        if tmux_window_index is not None:
+            tmux_part += f" (window {tmux_window_index})"
         parts.append(tmux_part)
     elif iterm_session_id:
         parts.append(f"iTerm session `{iterm_session_id}`")
@@ -104,14 +112,14 @@ def _build_coordinator_reconnect_commands(coordinator: dict) -> list[str]:
     known fields. Alive needs only a tmux session name; dead needs both
     project_dir and session_id (both required for `claude --resume`)."""
     commands = []
-    session_name = coordinator.get("session_name")
+    tmux_session_name = coordinator.get("tmux_session_name")
     project_dir = coordinator.get("project_dir")
     session_id = coordinator.get("session_id")
 
-    if session_name:
+    if tmux_session_name:
         commands.append(
-            f"alive → `tmux switch-client -t '{session_name}'` "
-            f"(or `tmux attach -t '{session_name}'` from outside tmux)"
+            f"alive → `tmux switch-client -t '{tmux_session_name}'` "
+            f"(or `tmux attach -t '{tmux_session_name}'` from outside tmux)"
         )
     if project_dir and session_id:
         commands.append(
@@ -123,16 +131,16 @@ def _build_coordinator_reconnect_commands(coordinator: dict) -> list[str]:
 def _build_coordinator_section(coordinator: Optional[dict], worker_session_id: str) -> str:
     """Build the coordinator-identity section (spec component 4).
 
-    `coordinator` is a plain dict matching the shape of the (sibling-owned)
-    CoordinatorIdentity.to_dict() -- every field Optional. This module never
-    imports the sibling's coordinator_identity module; it decouples through
-    this dict shape instead. Renders only fields that are known, and omits
-    the section entirely when no identity is available at all.
+    `coordinator` is the real output of CoordinatorIdentity.to_dict()
+    (coordinator_identity.py) -- every field Optional. This module never
+    imports coordinator_identity itself; it decouples through this dict
+    shape instead. Renders only fields that are known, and omits the
+    section entirely when no identity is available at all.
     """
     if not coordinator:
         return ""
     if not any(coordinator.get(key) for key in (
-        "session_id", "pid", "session_name", "iterm_session_id", "project_dir"
+        "session_id", "pid", "tmux_session_name", "iterm_session_id", "project_dir"
     )):
         return ""
 

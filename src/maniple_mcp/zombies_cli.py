@@ -92,6 +92,11 @@ def _coordinator_is_alive(
         # Process exists but is owned by another user -- it is NOT dead,
         # just unverifiable further. Fall through to the start-time check.
         pass
+    except OverflowError:
+        # pid is too large to be a real C long (corrupt/malformed manifest
+        # data) -- can never correspond to a real process, so it's the
+        # same "unverifiable identity" case as pid=None above.
+        return False, False
     except OSError:
         # Unexpected error querying the PID; can't confirm death, so don't
         # falsely report a live coordinator as dead (best-effort/fail-open,
@@ -116,25 +121,74 @@ def _coordinator_is_alive(
         return False, True
 
 
+# Effectively unbounded for idle-age marker lookups. find_jsonl_by_marker/
+# find_codex_session_by_internal_id default to a short max_age_seconds
+# because their normal caller (spawn-time correlation) only cares about
+# files touched in the last moment -- but idle-age lookup is the OPPOSITE
+# case: we're specifically looking for files that HAVEN'T been touched
+# recently. A large constant effectively disables that staleness filter
+# for this use.
+_IDLE_AGE_MARKER_LOOKBACK_SECONDS = 365 * 24 * 3600  # ~1 year
+
+
+def _resolve_jsonl_mtime(
+    marker_id: str, project_path: str, agent_type: Optional[str]
+) -> Optional[float]:
+    """Resolve a worker's internal marker id to its real JSONL file's
+    mtime, via the marker-correlation helpers -- NEVER treats the marker
+    id itself as a JSONL filename (it isn't one; the JSONL is named by a
+    UUID the agent CLI assigns only after the handshake prompt round-trips).
+    Tries Claude's find_jsonl_by_marker and/or Codex's
+    find_codex_session_by_internal_id depending on agent_type (both when
+    agent_type is unknown). None if unresolvable via either."""
+    if agent_type != "codex":
+        from .session_state import find_jsonl_by_marker, get_project_dir
+
+        claude_session_id = find_jsonl_by_marker(
+            project_path, marker_id, max_age_seconds=_IDLE_AGE_MARKER_LOOKBACK_SECONDS
+        )
+        if claude_session_id:
+            try:
+                jsonl_path = get_project_dir(project_path) / f"{claude_session_id}.jsonl"
+                return jsonl_path.stat().st_mtime
+            except OSError:
+                pass
+
+    if agent_type in (None, "codex"):
+        from .session_state import find_codex_session_by_internal_id
+
+        match = find_codex_session_by_internal_id(
+            marker_id, max_age_seconds=_IDLE_AGE_MARKER_LOOKBACK_SECONDS
+        )
+        if match:
+            try:
+                return match.jsonl_path.stat().st_mtime
+            except OSError:
+                pass
+
+    return None
+
+
 def get_idle_age(
     session_id: str,
     spawned_at: Optional[str] = None,
     project_path: Optional[str] = None,
+    agent_type: Optional[str] = None,
 ) -> float:
     """Get idle age in hours from JSONL mtime or manifest spawned_at.
 
-    Tries JSONL mtime first (via session_state); falls back to manifest
-    spawned_at timestamp. Returns hours since last activity.
+    `session_id` is the WORKER's internal maniple id (manifest
+    worker.session_id, the marker embedded at spawn) -- NEVER the Claude/
+    Codex JSONL filename. Resolves it to the real JSONL via the marker-
+    correlation helpers, then uses THAT file's mtime; falls back to
+    manifest spawned_at only when the marker can't be resolved to any
+    JSONL (never handshaked, or long since rotated away).
     """
-    # Try to find JSONL mtime
     if project_path:
         try:
-            from .session_state import list_sessions
-
-            for sid, _jsonl_path, mtime in list_sessions(project_path):
-                if sid == session_id:
-                    age_seconds = time.time() - mtime
-                    return age_seconds / 3600
+            mtime = _resolve_jsonl_mtime(session_id, project_path, agent_type)
+            if mtime is not None:
+                return (time.time() - mtime) / 3600
         except Exception:
             pass
 
@@ -218,7 +272,7 @@ def _tmux_attached(
 def _ps_scan(ps_output: Optional[str] = None) -> dict:
     """Best-effort scan of `ps -eo pid,command` output for worker processes,
     matched via the `--settings .../worker-<id>.json` argv pattern every
-    worker is launched with. Returns {session_id: pid}.
+    Claude worker is launched with. Returns {session_id: pid}.
 
     Used two ways by discover_workers(): (1) to confirm a manifest-sourced
     worker's process is actually still running (worker_alive), and (2) to
@@ -229,6 +283,46 @@ def _ps_scan(ps_output: Optional[str] = None) -> dict:
     ps_output is injectable for testing; when None, shells out to the real
     `ps` binary. Never raises -- returns {} on any failure (missing `ps`,
     timeout, etc).
+
+    KNOWN GAP -- Codex workers are invisible to this scan (verifier finding
+    P12), and there is currently no portable fix: Codex never gets a
+    `--settings` flag (CodexCLI.supports_settings_file() is False), so
+    _SETTINGS_FILE_RE can never match it. The natural alternative --
+    scanning each process's environment for the MANIPLE_WORKER=1 marker
+    every worker launch sets (cli_backends/base.py build_full_command) --
+    was investigated and does NOT work on this platform:
+      1. `ps eww -p <pid>` (BSD env-display flag) prints no environment
+         block at all on this macOS (verified empirically against a
+         self-spawned child process with a known env var set).
+      2. Even if it did, MANIPLE_WORKER=1 is an env-var PREFIX on an
+         interactively-typed command (`tmux send-keys` types the full
+         `VAR=val ... cmd args` line into an already-running shell), so the
+         shell consumes it as an environment assignment for that one
+         command -- it never appears in the exec'd child's OWN argv either.
+         Verified against real running workers on this machine: `ps -eo
+         pid,command | grep -- --settings` shows only
+         `claude --dangerously-skip-permissions --settings ... --model ...`
+         -- no MANIPLE_WORKER anywhere in the child's command line.
+    Reading another same-user process's real environment on macOS requires
+    something below plain `ps` (e.g. psutil's KERN_PROCARGS2 sysctl, or a
+    native call) -- out of scope for this report-only CLI without an
+    explicit decision to add that dependency.
+
+    Two concrete consequences, both real and both open:
+      - A Codex worker with NO manifest at all (pre-feature, or a
+        manifest-write failure) is invisible to the whole report --
+        doesn't show up as orphaned/forgotten/ok, just absent.
+      - A Codex worker that DOES have a manifest still shows worker_alive
+        = False even while genuinely running, because worker_alive is
+        `session_id in ps_matches` and ps_matches can never contain a
+        Codex session id. This doesn't affect classification (orphaned/
+        forgotten/ok/closed are driven by coordinator state + idle age,
+        not worker_alive), only the worker_alive display column.
+    A follow-up fix for the second point specifically (resolving
+    worker_alive for manifest-sourced workers via tmux/iTerm pane
+    existence instead of ps, since the manifest already has terminal_id)
+    is plausible without new dependencies, but is a distinct, separately-
+    reviewable change to worker_alive's semantics -- not implemented here.
     """
     if ps_output is None:
         try:
@@ -349,7 +443,12 @@ def discover_workers(
                 # Compute idle age
                 project_path = worker_info.get("project_path")
                 spawned_at = worker_info.get("spawned_at")
-                idle_age = get_idle_age(session_id, spawned_at, project_path)
+                idle_age = get_idle_age(
+                    session_id,
+                    spawned_at,
+                    project_path,
+                    agent_type=worker_info.get("agent_type"),
+                )
 
                 # Check coordinator liveness
                 coor_pid = coordinator_info.get("pid")
@@ -371,13 +470,13 @@ def discover_workers(
                     "coordinator_pid": coor_pid,
                     "coordinator_pid_start": coor_pid_start,
                     "coordinator_session_id": coordinator_info.get("session_id"),
-                    "coordinator_session_name": coordinator_info.get("session_name"),
-                    "coordinator_window_index": coordinator_info.get("window_index"),
+                    "coordinator_session_name": coordinator_info.get("tmux_session_name"),
+                    "coordinator_window_index": coordinator_info.get("tmux_window_index"),
                     "coordinator_iterm_session_id": coordinator_info.get("iterm_session_id"),
                     "coordinator_alive": coor_alive and not coor_defunct,
                     "coordinator_defunct": coor_defunct,
                     "project_dir": coordinator_info.get("project_dir"),
-                    "closed_at": data.get("closed_at"),
+                    "closed_at": worker_info.get("closed_at"),
                     "source": "manifest",
                 }
 
@@ -385,8 +484,11 @@ def discover_workers(
 
                 workers_by_id[session_id] = worker
 
-            except (json.JSONDecodeError, KeyError, TypeError):
-                # Manifest is malformed; skip (best-effort)
+            except (json.JSONDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError):
+                # Manifest is malformed, unreadable (permissions, transient
+                # IO), or not valid UTF-8; skip it and keep scanning the
+                # rest -- this is a report tool, one bad file must never
+                # abort the whole scan (P5).
                 continue
 
     # 2. Pre-feature workers found only via ps-scan (no manifest at all).
