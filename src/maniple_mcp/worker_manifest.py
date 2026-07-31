@@ -45,6 +45,7 @@ def write_worker_manifest(
     worktree_path: Optional[str],
     main_repo_path: Optional[str],
     model: Optional[str],
+    effort: Optional[str] = None,
     coordinator: CoordinatorIdentity,
 ) -> None:
     """Best-effort: write the worker manifest at spawn. Never raises -- a
@@ -62,6 +63,7 @@ def write_worker_manifest(
                 "worktree_path": worktree_path,
                 "main_repo_path": main_repo_path,
                 "model": model,
+                "effort": effort,
                 "spawned_at": _utc_now_iso(),
             },
             "coordinator": coordinator.to_dict(),

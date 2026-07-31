@@ -85,6 +85,7 @@ class ClaudeCLI(AgentCLI):
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> list[str]:
         """
         Build Claude CLI arguments.
@@ -94,6 +95,8 @@ class ClaudeCLI(AgentCLI):
             settings_file: Path to settings JSON for Stop hook injection
             plugin_dir: Path(s) to plugin directory for --plugin-dir (single string or list)
             model: Optional model name to pass as --model <value>.
+                Omitted entirely when None — do not pass an empty value.
+            effort: Optional effort level to pass as --effort <value>.
                 Omitted entirely when None — do not pass an empty value.
 
         Returns:
@@ -124,6 +127,12 @@ class ClaudeCLI(AgentCLI):
         if model:
             args.append("--model")
             args.append(model)
+
+        # Append --effort as an additional arg, same constraint as --model above:
+        # MUST NOT inject via commands.claude or MANIPLE_COMMAND.
+        if effort:
+            args.append("--effort")
+            args.append(effort)
 
         return args
 

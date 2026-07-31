@@ -470,6 +470,7 @@ class TmuxBackend(TerminalBackend):
         plugin_dir: str | None = None,
         trust_project_mcp: bool = True,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         """Start a CLI agent in an existing tmux pane."""
         # Ensure the shell is responsive before we send the launch command.
@@ -497,6 +498,7 @@ class TmuxBackend(TerminalBackend):
             settings_file=settings_file,
             plugin_dir=plugin_dir,
             model=model,
+            effort=effort,
             env_vars=env,
         )
 

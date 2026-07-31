@@ -178,7 +178,9 @@ maniple config set <key> <value>  # Set and persist a value
     "agent_type": "claude",
     "skip_permissions": false,
     "use_worktree": true,
-    "layout": "auto"
+    "layout": "auto",
+    "model": null,
+    "effort": null
   },
   "terminal": {
     "backend": null
@@ -214,6 +216,8 @@ maniple config set <key> <value>  # Set and persist a value
 | `defaults.skip_permissions` | bool | Default `--dangerously-skip-permissions` flag |
 | `defaults.use_worktree` | bool | Create git worktrees by default |
 | `defaults.layout` | `"auto"` or `"new"` | Default layout mode for spawn_workers |
+| `defaults.model` | string | Default Claude model, passed as `--model <value>` (Claude only; overridden per-worker by `model`) |
+| `defaults.effort` | `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` | Default effort level, passed as `--effort <value>` (Claude only; overridden per-worker by `effort`) |
 | `terminal.backend` | `"tmux"` or `"iterm"` | Terminal backend override (null = auto-detect) |
 | `events.max_size_mb` | int | Max event log file size before rotation |
 | `events.recent_hours` | int | Hours of events to retain |
@@ -414,6 +418,10 @@ WorkerConfig fields:
                               base: Ref/branch to branch FROM (default: HEAD). Set this
                                     when subtask workers need a feature branch's commits
                                     (e.g. {"base": "epic-id/feature-branch"})
+  model: str                - Optional Claude model, passed as --model <value> (Claude only).
+                              Overrides defaults.model.
+  effort: str               - Optional effort level, passed as --effort <value> (Claude only).
+                              One of: low, medium, high, xhigh, max. Overrides defaults.effort.
 
 Top-level arguments:
   workers: list[WorkerConfig]  - 1-4 worker configurations
