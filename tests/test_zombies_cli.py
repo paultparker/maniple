@@ -897,3 +897,77 @@ class TestRealManifestSchema:
         (real_manifest_dir / "broken.json").write_text(json.dumps({"schema_version": 1}))
         workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
         assert workers == []
+
+
+class TestMalformedManifestNonDictShapes:
+    """P5-residual: the per-manifest except clause enumerated
+    (json.JSONDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError)
+    -- but a manifest whose 'worker'/'coordinator' value is a non-dict (e.g.
+    a list or string), or whose top-level JSON isn't an object at all, hits
+    dict.get()/AttributeError, which isn't in that tuple. That crashed
+    discover_workers() with a traceback and made `maniple zombies` exit 1.
+    Each case must be skipped like any other malformed manifest, leaving
+    discover_workers() to return cleanly (source of the CLI's exit 0)."""
+
+    def test_worker_value_non_dict_skipped_not_crashed(self, real_manifest_dir):
+        real_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (real_manifest_dir / "bad-worker.json").write_text(
+            json.dumps({"worker": [], "coordinator": {}})
+        )
+        workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
+        assert workers == []
+
+    def test_coordinator_value_non_dict_skipped_not_crashed(self, real_manifest_dir):
+        real_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (real_manifest_dir / "bad-coordinator.json").write_text(
+            json.dumps({"worker": {"session_id": "x"}, "coordinator": []})
+        )
+        workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
+        assert workers == []
+
+    def test_top_level_json_string_skipped_not_crashed(self, real_manifest_dir):
+        real_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (real_manifest_dir / "bad-toplevel-string.json").write_text(
+            json.dumps("just a string")
+        )
+        workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
+        assert workers == []
+
+    def test_top_level_json_list_skipped_not_crashed(self, real_manifest_dir):
+        real_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (real_manifest_dir / "bad-toplevel-list.json").write_text(
+            json.dumps(["not", "an", "object"])
+        )
+        workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
+        assert workers == []
+
+    def test_one_bad_manifest_does_not_hide_a_good_one(self, real_manifest_dir):
+        """All 4 malformed shapes coexist with a valid manifest; the scan
+        must skip the bad ones and still report the good one -- this is
+        what 'maniple zombies exits 0' actually depends on."""
+        real_manifest_dir.mkdir(parents=True, exist_ok=True)
+        (real_manifest_dir / "bad-worker.json").write_text(
+            json.dumps({"worker": [], "coordinator": {}})
+        )
+        (real_manifest_dir / "bad-coordinator.json").write_text(
+            json.dumps({"worker": {"session_id": "x"}, "coordinator": []})
+        )
+        (real_manifest_dir / "bad-toplevel-string.json").write_text(
+            json.dumps("just a string")
+        )
+        (real_manifest_dir / "bad-toplevel-list.json").write_text(
+            json.dumps(["not", "an", "object"])
+        )
+        write_worker_manifest(
+            worker_session_id="w-good",
+            name="Dave",
+            agent_type="claude",
+            terminal_id="tmux:%5",
+            project_path="/repo",
+            worktree_path=None,
+            main_repo_path="/repo",
+            model="sonnet",
+            coordinator=CoordinatorIdentity(),
+        )
+        workers = discover_workers(workers_dir=real_manifest_dir, ps_output="")
+        assert [w["session_id"] for w in workers] == ["w-good"]

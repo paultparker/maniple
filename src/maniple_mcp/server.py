@@ -713,9 +713,16 @@ def main():
     if args.command == "zombies":
         from .zombies_cli import discover_workers, format_zombies_report
 
-        workers = discover_workers()
-        report = format_zombies_report(workers, as_json=args.json)
-        print(report)
+        try:
+            workers = discover_workers()
+            report = format_zombies_report(workers, as_json=args.json)
+            print(report)
+        except Exception as exc:
+            # Report tool, no errors (P5): even an unexpected failure here
+            # must not crash the CLI with a traceback -- print it and still
+            # exit 0. discover_workers() already skips individual malformed
+            # manifests; this is a backstop for anything outside that loop.
+            print(f"Error generating zombies report: {exc}", file=sys.stderr)
         return
 
     # Default behavior: run the MCP server.

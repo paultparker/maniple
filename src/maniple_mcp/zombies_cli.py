@@ -285,28 +285,34 @@ def _ps_scan(ps_output: Optional[str] = None) -> dict:
     timeout, etc).
 
     KNOWN GAP -- Codex workers are invisible to this scan (verifier finding
-    P12), and there is currently no portable fix: Codex never gets a
+    P12), and there is currently no fix implemented: Codex never gets a
     `--settings` flag (CodexCLI.supports_settings_file() is False), so
     _SETTINGS_FILE_RE can never match it. The natural alternative --
     scanning each process's environment for the MANIPLE_WORKER=1 marker
     every worker launch sets (cli_backends/base.py build_full_command) --
-    was investigated and does NOT work on this platform:
-      1. `ps eww -p <pid>` (BSD env-display flag) prints no environment
-         block at all on this macOS (verified empirically against a
-         self-spawned child process with a known env var set).
-      2. Even if it did, MANIPLE_WORKER=1 is an env-var PREFIX on an
-         interactively-typed command (`tmux send-keys` types the full
-         `VAR=val ... cmd args` line into an already-running shell), so the
-         shell consumes it as an environment assignment for that one
-         command -- it never appears in the exec'd child's OWN argv either.
-         Verified against real running workers on this machine: `ps -eo
-         pid,command | grep -- --settings` shows only
-         `claude --dangerously-skip-permissions --settings ... --model ...`
-         -- no MANIPLE_WORKER anywhere in the child's command line.
-    Reading another same-user process's real environment on macOS requires
-    something below plain `ps` (e.g. psutil's KERN_PROCARGS2 sysctl, or a
-    native call) -- out of scope for this report-only CLI without an
-    explicit decision to add that dependency.
+    was investigated but is not what this scan does today:
+      1. `ps eww -p <pid>` (BSD env-display flag) DOES print an
+         environment block for an ordinary worker process (verified
+         empirically: a self-spawned node child process with a known env
+         var set showed that var in `ps eww` output). Testing that first
+         showed no environment block at all was against SIP-hardened Apple
+         system binaries (`/bin/sleep`, `/bin/sh`, `/usr/bin/perl`), which
+         do strip env from `ps`'s view -- but real worker processes
+         (`claude`, which resolves to a homebrew-installed node binary) are
+         not SIP-hardened and are not subject to that restriction.
+      2. MANIPLE_WORKER=1 is an env-var PREFIX on an interactively-typed
+         command (`tmux send-keys` types the full `VAR=val ... cmd args`
+         line into an already-running shell), so it never appears in the
+         exec'd child's argv (`ps -eo pid,command | grep -- --settings`
+         shows only `claude --dangerously-skip-permissions --settings ...
+         --model ...`, no MANIPLE_WORKER). But it DOES land in the child's
+         own environment and does show up in `ps eww`'s environment block,
+         the same as any other env var -- so this path is not a dead end.
+    Switching _ps_scan to `ps eww` and reliably parsing MANIPLE_WORKER=1
+    out of the trailing environment portion of each line (distinguishing it
+    from argv tokens and other env vars, across arbitrarily long PATH/FPATH
+    values) is a plausible fix, but is a distinct, separately-reviewable
+    change to the scan's implementation -- not implemented here.
 
     Two concrete consequences, both real and both open:
       - A Codex worker with NO manifest at all (pre-feature, or a
@@ -484,11 +490,15 @@ def discover_workers(
 
                 workers_by_id[session_id] = worker
 
-            except (json.JSONDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError):
-                # Manifest is malformed, unreadable (permissions, transient
-                # IO), or not valid UTF-8; skip it and keep scanning the
-                # rest -- this is a report tool, one bad file must never
-                # abort the whole scan (P5).
+            except Exception:
+                # Manifest is malformed in any way -- bad JSON, unreadable
+                # (permissions, transient IO), not valid UTF-8, or
+                # structurally wrong (e.g. 'worker'/'coordinator' is a
+                # non-dict, or the top-level JSON isn't an object at all,
+                # both of which raise AttributeError on .get() and aren't
+                # covered by any narrower exception tuple) -- skip it and
+                # keep scanning the rest. This is a report tool, one bad
+                # file must never abort the whole scan (P5).
                 continue
 
     # 2. Pre-feature workers found only via ps-scan (no manifest at all).
