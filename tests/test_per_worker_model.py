@@ -254,6 +254,7 @@ def _build_mcp_tool(monkeypatch, config, backend, tmp_path):
     monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
     monkeypatch.setattr(spawn_workers_module, "get_cli_backend", lambda *_: "cli:claude")
     monkeypatch.setattr(spawn_workers_module, "get_worktree_tracker_dir", lambda *_: None)
+    monkeypatch.setattr(spawn_workers_module, "write_worker_manifest", lambda **_: None)
     monkeypatch.setattr(
         spawn_workers_module,
         "generate_worker_prompt",
