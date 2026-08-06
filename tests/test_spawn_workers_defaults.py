@@ -517,3 +517,80 @@ async def test_spawn_workers_manifest_failure_does_not_block_spawn(tmp_path, mon
     assert "error" not in result
     assert result["count"] == 1
     assert "Worker1" in result["sessions"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_workers_passes_coordinator_to_generate_worker_prompt(
+    tmp_path, monkeypatch
+):
+    """I1 (verifier finding): generate_worker_prompt()'s coordinator=
+    section (spec component 4) was dead code -- spawn_workers never passed
+    it. Assert the real CoordinatorIdentity.to_dict() output reaches
+    generate_worker_prompt's coordinator kwarg."""
+    identity = CoordinatorIdentity(
+        pid=4242,
+        session_id="coord-sess-1",
+        project_dir="/repo",
+        tmux_session_name="maniple-repo",
+        tmux_window_index="1",
+    )
+    monkeypatch.setattr(spawn_workers_module, "get_coordinator_identity", lambda: identity)
+    monkeypatch.setattr(spawn_workers_module, "write_worker_manifest", lambda **kwargs: None)
+
+    config = default_config()
+    config.defaults = DefaultsConfig(
+        agent_type="claude", skip_permissions=False, use_worktree=False, layout="new",
+    )
+    monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
+    monkeypatch.setattr(spawn_workers_module, "get_cli_backend", lambda *_: "cli:claude")
+    monkeypatch.setattr(spawn_workers_module, "get_worktree_tracker_dir", lambda *_: None)
+
+    prompt_calls = []
+
+    def fake_generate_worker_prompt(*args, **kwargs):
+        prompt_calls.append(kwargs.get("coordinator"))
+        return "PROMPT"
+
+    monkeypatch.setattr(
+        spawn_workers_module, "generate_worker_prompt", fake_generate_worker_prompt
+    )
+    monkeypatch.setattr(
+        spawn_workers_module, "get_coordinator_guidance", lambda *args, **kwargs: {"summary": "ok"},
+    )
+
+    async def fake_await_marker_in_jsonl(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(session_state, "await_marker_in_jsonl", fake_await_marker_in_jsonl)
+    monkeypatch.setattr(session_state, "generate_marker_message", lambda *args, **kwargs: "MARKER")
+
+    backend = FakeBackend()
+    registry = SessionRegistry()
+    app_ctx = SimpleNamespace(registry=registry, backend=backend)
+
+    async def ensure_connection(app_context):
+        return app_context.backend
+
+    mcp = FastMCP("test")
+    spawn_workers_module.register_tools(mcp, ensure_connection)
+    tool = mcp._tool_manager.get_tool("spawn_workers")
+
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=app_ctx))
+    await tool.run({"workers": [{"project_path": str(repo_path), "name": "Worker1"}]}, context=ctx)
+
+    assert len(prompt_calls) == 1
+    assert prompt_calls[0] == identity.to_dict()
+
+    # End-to-end: the real generate_worker_prompt (not the fake above) must
+    # actually render the coordinator section from this dict shape.
+    from maniple_mcp.worker_prompt import generate_worker_prompt as real_generate_worker_prompt
+
+    rendered = real_generate_worker_prompt(
+        "worker-1", "Ringo", coordinator=identity.to_dict()
+    )
+    assert "Your coordinator:" in rendered
+    assert "coord-sess-1" in rendered
+    assert "tmux switch-client -t 'maniple-repo'" in rendered

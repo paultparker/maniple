@@ -5,6 +5,7 @@ import json
 import pytest
 
 from maniple_mcp import config as config_module
+from maniple_mcp.coordinator_identity import CoordinatorIdentity
 from maniple_mcp.worker_prompt import (
     AgentType,
     generate_worker_prompt,
@@ -480,3 +481,155 @@ class TestMixedTeamCoordinatorGuidance:
         assert "Mixed team note" not in guidance
         # Should still not show type indicators (not mixed)
         assert "[codex]" not in guidance
+
+
+class TestCoordinatorSection:
+    """Tests for the coordinator-identity section (spec component 4).
+
+    `coordinator` is the REAL output of CoordinatorIdentity.to_dict()
+    (src/maniple_mcp/coordinator_identity.py) -- fed in directly, not a
+    hand-built dict, so these tests break if the real schema drifts out
+    from under this module's key names. Real field names: pid, pid_start,
+    session_id, project_dir, tmux_env, tmux_pane_env, tmux_session_name,
+    tmux_window_index, tmux_pane_index, iterm_session_id -- all Optional.
+    This module never imports coordinator_identity itself (decoupled via
+    the dict shape), but the tests must exercise the real shape.
+    """
+
+    FULL_IDENTITY = CoordinatorIdentity(
+        pid=4242,
+        pid_start="Thu Jul 24 09:00:00 2026",
+        session_id="coord-abc-123",
+        project_dir="/Users/paulparker/Dropbox/code/maniple",
+        tmux_env="/tmp/tmux-501/default,1234,0",
+        tmux_pane_env="%5",
+        tmux_session_name="maniple-verify-design",
+        tmux_window_index="3",
+        tmux_pane_index="0",
+        iterm_session_id=None,
+    )
+    FULL_COORDINATOR = FULL_IDENTITY.to_dict()
+
+    def test_omitted_when_coordinator_is_none(self):
+        """No coordinator info at all -> section omitted entirely."""
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=None
+        )
+        assert "Your coordinator:" not in prompt
+        assert "manifest" not in prompt.lower()
+
+    def test_omitted_when_coordinator_is_empty_identity(self):
+        """A CoordinatorIdentity with every field None (full capture
+        failure) is treated the same as no identity."""
+        empty = CoordinatorIdentity().to_dict()
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=empty)
+        assert "Your coordinator:" not in prompt
+
+    def test_full_identity_renders_session_pid_and_tmux(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "Your coordinator:" in prompt
+        assert "coord-abc-123" in prompt
+        assert "4242" in prompt
+        assert "maniple-verify-design" in prompt
+        assert "window 3" in prompt
+
+    def test_full_identity_includes_alive_reconnect_command(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "tmux switch-client -t 'maniple-verify-design'" in prompt
+        assert "tmux attach -t 'maniple-verify-design'" in prompt
+
+    def test_full_identity_includes_dead_resume_command(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert (
+            "cd /Users/paulparker/Dropbox/code/maniple && claude --resume coord-abc-123"
+            in prompt
+        )
+
+    def test_manifest_path_uses_workers_own_session_id(self):
+        prompt = generate_worker_prompt(
+            "worker-xyz", "Ringo", coordinator=self.FULL_COORDINATOR
+        )
+        assert "~/.maniple/workers/worker-xyz.json" in prompt
+
+    def test_partial_identity_session_id_only_omits_reconnect_commands(self):
+        """Only session_id known -- no pid/tmux/project_dir -- so identity
+        line renders but neither reconnect command can be built."""
+        partial = CoordinatorIdentity(session_id="coord-solo").to_dict()
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "coord-solo" in prompt
+        assert "switch-client" not in prompt
+        assert "claude --resume" not in prompt
+        # Manifest line still present since coordinator info is known.
+        assert "~/.maniple/workers/worker-1.json" in prompt
+
+    def test_partial_identity_missing_project_dir_omits_dead_command_only(self):
+        """pid/tmux/session_id known but no project_dir -- alive command
+        renders (needs only tmux), dead command is omitted (needs project_dir
+        + session_id together)."""
+        partial = CoordinatorIdentity(
+            pid=99,
+            session_id="coord-2",
+            tmux_session_name="mysession",
+            tmux_window_index="1",
+        ).to_dict()
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "tmux switch-client -t 'mysession'" in prompt
+        assert "claude --resume" not in prompt
+
+    def test_iterm_only_identity_mentions_iterm_session(self):
+        """No tmux, but an iTerm session id is known."""
+        partial = CoordinatorIdentity(
+            session_id="coord-3", iterm_session_id="ABCD-1234"
+        ).to_dict()
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=partial)
+        assert "ABCD-1234" in prompt
+        assert "switch-client" not in prompt
+
+    def test_tmux_wins_over_iterm_when_both_present(self):
+        """A worker launched from iTerm running tmux inherits BOTH
+        ITERM_SESSION_ID and tmux env vars -- tmux must take precedence
+        since that's the actually-reachable location (P3)."""
+        both = CoordinatorIdentity(
+            session_id="coord-5",
+            tmux_session_name="mysession",
+            tmux_window_index="2",
+            iterm_session_id="SHOULD-NOT-APPEAR",
+        ).to_dict()
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=both)
+        assert "mysession" in prompt
+        assert "switch-client -t 'mysession'" in prompt
+        assert "SHOULD-NOT-APPEAR" not in prompt
+
+    def test_unknown_dict_keys_are_ignored_not_raising(self):
+        """Extra/unrecognized keys (e.g. from a future schema bump) must not
+        raise -- this module reads keys defensively."""
+        weird = {"session_id": "coord-4", "some_future_field": "whatever"}
+        prompt = generate_worker_prompt("worker-1", "Ringo", coordinator=weird)
+        assert "coord-4" in prompt
+
+    def test_codex_prompt_also_renders_coordinator_section(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", agent_type="codex",
+            coordinator=self.FULL_COORDINATOR,
+        )
+        assert "Your coordinator:" in prompt
+        assert "coord-abc-123" in prompt
+        assert "tmux switch-client -t 'maniple-verify-design'" in prompt
+
+    def test_codex_prompt_omitted_when_no_coordinator(self):
+        prompt = generate_worker_prompt(
+            "worker-1", "Ringo", agent_type="codex", coordinator=None
+        )
+        assert "Your coordinator:" not in prompt
+
+    def test_default_coordinator_param_is_none(self):
+        """Existing callers that don't pass coordinator=... keep working
+        (backward compatible default) and get no section."""
+        prompt = generate_worker_prompt("worker-1", "Ringo")
+        assert "Your coordinator:" not in prompt

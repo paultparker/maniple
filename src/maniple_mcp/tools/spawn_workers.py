@@ -836,6 +836,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                         )
 
             # Send worker prompts - always use generate_worker_prompt with issue_id/custom_prompt
+            # Coordinator identity for the worker-prompt breadcrumb section
+            # (spec component 4) -- get_coordinator_identity() is cached and
+            # never raises, so a fresh call here is cheap and doesn't depend
+            # on the manifest loop above having run/succeeded.
+            coordinator_dict = get_coordinator_identity().to_dict()
             workers_awaiting_task: list[str] = []  # Workers with no issue_id and no prompt
             for i, managed in enumerate(managed_sessions):
                 worker_config = workers[i]
@@ -860,6 +865,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     issue_id=issue_id,
                     project_path=tracker_path,
                     custom_prompt=custom_prompt,
+                    coordinator=coordinator_dict,
                 )
 
                 # Send prompt to the already-running agent (both Claude and Codex)

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zombie Workers Implementation — Component 4 Progress</title>
+    <style>
+        :root {
+            --bg-light: #ffffff;
+            --bg-dark: #1a1a1a;
+            --text-light: #000000;
+            --text-dark: #e8e8e8;
+            --accent: #0066cc;
+            --accent-hover: #0052a3;
+            --border: #e0e0e0;
+            --border-dark: #333333;
+            --code-bg-light: #f5f5f5;
+            --code-bg-dark: #2a2a2a;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: var(--bg-dark);
+                --text: var(--text-dark);
+                --border: var(--border-dark);
+                --code-bg: var(--code-bg-dark);
+            }
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: var(--bg-light);
+                --text: var(--text-light);
+                --border: var(--border);
+                --code-bg: var(--code-bg-light);
+            }
+        }
+
+        html, body {
+            background-color: var(--bg-light);
+            color: var(--text-light);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            html, body {
+                background-color: var(--bg-dark);
+                color: var(--text-dark);
+            }
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-top: 0;
+            margin-bottom: 0.5rem;
+            color: var(--text-light);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            h1 {
+                color: var(--text-dark);
+            }
+        }
+
+        .dateline {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 2rem;
+            font-style: italic;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .dateline {
+                color: #aaa;
+            }
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            margin-bottom: 0.75rem;
+            color: var(--text-light);
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            h2 {
+                color: var(--text-dark);
+                border-bottom-color: var(--border-dark);
+            }
+        }
+
+        h3 {
+            font-size: 1.2rem;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            h3 {
+                color: #66b3ff;
+            }
+        }
+
+        .status {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin: 1.5rem 0;
+            border-left: 4px solid;
+        }
+
+        .status.done {
+            background-color: #e8f5e9;
+            color: #1b5e20;
+            border-color: #4caf50;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .status.done {
+                background-color: #1b5e20;
+                color: #c8e6c9;
+            }
+        }
+
+        .status.in-progress {
+            background-color: #fff3e0;
+            color: #e65100;
+            border-color: #ff9800;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .status.in-progress {
+                background-color: #e65100;
+                color: #ffe0b2;
+            }
+        }
+
+        .status.pending {
+            background-color: #e3f2fd;
+            color: #01579b;
+            border-color: #2196f3;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .status.pending {
+                background-color: #01579b;
+                color: #bbdefb;
+            }
+        }
+
+        code {
+            background-color: var(--code-bg-light);
+            color: var(--text-light);
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+            font-size: 0.9em;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            code {
+                background-color: var(--code-bg-dark);
+                color: var(--text-dark);
+            }
+        }
+
+        pre {
+            background-color: var(--code-bg-light);
+            color: var(--text-light);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+            font-size: 0.9em;
+            line-height: 1.4;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            pre {
+                background-color: var(--code-bg-dark);
+                color: var(--text-dark);
+            }
+        }
+
+        ul, ol {
+            margin: 1rem 0;
+            padding-left: 2rem;
+        }
+
+        li {
+            margin: 0.5rem 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            th, td {
+                border-color: var(--border-dark);
+            }
+        }
+
+        th {
+            background-color: var(--code-bg-light);
+            color: var(--text-light);
+            font-weight: 600;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            th {
+                background-color: var(--code-bg-dark);
+                color: var(--text-dark);
+            }
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+            color: var(--accent-hover);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            a {
+                color: #66b3ff;
+            }
+            a:hover {
+                color: #99ccff;
+            }
+        }
+
+        .note {
+            padding: 0.75rem 1rem;
+            margin: 1rem 0;
+            border-left: 3px solid var(--accent);
+            background-color: var(--code-bg-light);
+            color: var(--text-light);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .note {
+                background-color: var(--code-bg-dark);
+                color: var(--text-dark);
+                border-color: #66b3ff;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Zombie Workers Implementation — Component 4 Progress</h1>
+        <p class="dateline">Generated 2026-07-24 19:12:50 UTC. First version.</p>
+
+        <h2>Overview</h2>
+        <p>
+            Building the "coordinator identity + zombie worker report" feature (v1) for maniple MCP server.
+            This explainer tracks progress on <strong>component 4 only</strong> (worker_prompt.py coordinator section).
+            Sibling worker is handling components 1–3 (coordinator_identity.py, env-var injection, manifest).
+        </p>
+
+        <h2>Component 4: Worker Prompt Coordinator Section</h2>
+        <p>
+            Add a 2–3 line identity breadcrumb to worker pre-prompts (Claude and Codex) showing:
+            <ul>
+                <li>Coordinator session ID, PID, tmux/iTerm location</li>
+                <li>Two reconnect commands:
+                    <ul>
+                        <li><strong>Alive</strong>: <code>tmux switch-client -t &lt;session&gt;</code> or <code>tmux attach</code></li>
+                        <li><strong>Dead</strong>: <code>cd &lt;project_dir&gt; && claude --resume &lt;session_id&gt;</code></li>
+                    </ul>
+                </li>
+                <li>Manifest path: <code>~/.maniple/workers/&lt;worker_id&gt;.json</code></li>
+            </ul>
+        </p>
+
+        <h2>Current Status</h2>
+
+        <div class="status in-progress">
+            <strong>In Progress: Task 1 — worker_prompt.py implementation</strong>
+        </div>
+
+        <h3>Completed ✓</h3>
+        <ul>
+            <li>Added test class <code>TestCoordinatorSection</code> in tests/test_worker_prompt.py (21 tests)</li>
+            <li>Implemented helper functions:
+                <ul>
+                    <li><code>_format_coordinator_identity_line()</code> — builds "Your coordinator: ..." sentence from known fields</li>
+                    <li><code>_build_coordinator_reconnect_commands()</code> — constructs alive/dead reconnect commands</li>
+                    <li><code>_build_coordinator_section()</code> — orchestrates full section rendering, omits when no identity</li>
+                </ul>
+            </li>
+            <li>Updated all three entry points:
+                <ul>
+                    <li><code>generate_worker_prompt()</code> — added <code>coordinator: Optional[dict]</code> parameter</li>
+                    <li><code>_generate_claude_worker_prompt()</code> — integrated coordinator section into prompt body</li>
+                    <li><code>_generate_codex_worker_prompt()</code> — integrated coordinator section into prompt body</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h3>Current Blocker</h3>
+        <p>
+            <strong>Test assertion collision:</strong> Four tests are failing because the boilerplate worker prompt
+            already contains the phrase "Your coordinator has tasks for you" (in the intro). My assertions checking
+            for <code>"Your coordinator" not in prompt</code> collide with this text.
+        </p>
+        <p>
+            <strong>Fix:</strong> Change assertions to check for <code>"Your coordinator:"</code> (with colon),
+            which only appears in the identity section I added, not in boilerplate.
+        </p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Test Name</th>
+                    <th>Status</th>
+                    <th>Fix</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>test_omitted_when_coordinator_is_none</code></td>
+                    <td>Failed (assertion)</td>
+                    <td>Change to <code>"Your coordinator:"</code></td>
+                </tr>
+                <tr>
+                    <td><code>test_omitted_when_coordinator_is_empty_dict</code></td>
+                    <td>Failed (assertion)</td>
+                    <td>Change to <code>"Your coordinator:"</code></td>
+                </tr>
+                <tr>
+                    <td><code>test_codex_prompt_omitted_when_no_coordinator</code></td>
+                    <td>Failed (assertion)</td>
+                    <td>Change to <code>"Your coordinator:"</code></td>
+                </tr>
+                <tr>
+                    <td><code>test_default_coordinator_param_is_none</code></td>
+                    <td>Failed (assertion)</td>
+                    <td>Change to <code>"Your coordinator:"</code></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p><strong>Test summary:</strong> 60 passed, 4 failed (all due to this single string collision).</p>
+
+        <h3>Next Steps (remaining for this component)</h3>
+        <ol>
+            <li>Fix the four failing assertions (change search string to <code>"Your coordinator:"</code>)</li>
+            <li>Re-run tests to confirm all 64 tests pass</li>
+            <li>Move on to Task 2: Add <code>zombies.idle_threshold_hours</code> to config.py schema</li>
+        </ol>
+
+        <h2>Design Notes</h2>
+
+        <div class="note">
+            <strong>Defensive reading:</strong> The coordinator dict is read via <code>.get()</code> on every key,
+            so an unexpected shape (future schema bump, partial capture) never raises. Matches the fail-open
+            philosophy of CoordinatorIdentity itself.
+        </div>
+
+        <div class="note">
+            <strong>Minimal render logic:</strong> Only fields that are known are included in the section.
+            The section is omitted entirely when no identity is present at all.
+        </div>
+
+        <div class="note">
+            <strong>Backward compatibility:</strong> Existing callers that don't pass <code>coordinator=...</code>
+            get the default <code>None</code> and see no section. No breaking changes.
+        </div>
+
+        <h2>Remaining Scope (Future Tasks 2–5)</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Task</th>
+                    <th>Component</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>config.py schema update</td>
+                    <td>5 (manifest)</td>
+                    <td>Pending</td>
+                </tr>
+                <tr>
+                    <td>zombies_cli.py implementation</td>
+                    <td>5 (CLI)</td>
+                    <td>Pending</td>
+                </tr>
+                <tr>
+                    <td>Wire into server.py::main()</td>
+                    <td>5 (CLI)</td>
+                    <td>Pending</td>
+                </tr>
+                <tr>
+                    <td>Full test suite run + commit</td>
+                    <td>All</td>
+                    <td>Pending</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Files Modified</h2>
+        <ul>
+            <li><code>src/maniple_mcp/worker_prompt.py</code>
+                <ul>
+                    <li>Added 3 helper functions (69 lines)</li>
+                    <li>Updated 3 function signatures</li>
+                    <li>Added coordinator section rendering to both Claude and Codex prompts</li>
+                </ul>
+            </li>
+            <li><code>tests/test_worker_prompt.py</code>
+                <ul>
+                    <li>Added <code>TestCoordinatorSection</code> class with 21 test methods</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+</body>
+</html>

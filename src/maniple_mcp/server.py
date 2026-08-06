@@ -603,6 +603,16 @@ def main():
         help="Usage fraction (0-1) at which the global hook denies tool calls (default: 0.80)",
     )
 
+    zombies_parser = subparsers.add_parser(
+        "zombies",
+        help="Report zombie workers (coordinator dead/defunct or forgotten)",
+    )
+    zombies_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON instead of human-readable table",
+    )
+
     args = parser.parse_args()
 
     # Handle config subcommands early to avoid starting the server.
@@ -698,6 +708,21 @@ def main():
         print()
         print('Add this to the "hooks" section of ~/.claude/settings.json:')
         print(result["snippet"])
+        return
+
+    if args.command == "zombies":
+        from .zombies_cli import discover_workers, format_zombies_report
+
+        try:
+            workers = discover_workers()
+            report = format_zombies_report(workers, as_json=args.json)
+            print(report)
+        except Exception as exc:
+            # Report tool, no errors (P5): even an unexpected failure here
+            # must not crash the CLI with a traceback -- print it and still
+            # exit 0. discover_workers() already skips individual malformed
+            # manifests; this is a backstop for anything outside that loop.
+            print(f"Error generating zombies report: {exc}", file=sys.stderr)
         return
 
     # Default behavior: run the MCP server.
