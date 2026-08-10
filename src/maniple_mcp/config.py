@@ -25,6 +25,11 @@ LayoutMode = Literal["auto", "new"]
 TerminalBackend = Literal["iterm", "tmux"]
 IssueTrackerName = Literal["beads", "pebbles"]
 
+# Effort levels accepted by `claude --effort <level>`. Deliberately wider than
+# settings.json's accepted set (which rejects "max"/"ultracode") -- this
+# validates against the CLI flag's own accepted values, not settings.json's.
+EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
 
 class ConfigError(ValueError):
     """Raised when the configuration file is invalid."""
@@ -47,6 +52,7 @@ class DefaultsConfig:
     use_worktree: bool = True
     layout: LayoutMode = "auto"
     model: str | None = None
+    effort: str | None = None
 
 
 @dataclass
@@ -307,7 +313,7 @@ def _parse_defaults(value: object) -> DefaultsConfig:
     data = _ensure_dict(value, "defaults")
     _validate_keys(
         data,
-        {"agent_type", "skip_permissions", "use_worktree", "layout", "model"},
+        {"agent_type", "skip_permissions", "use_worktree", "layout", "model", "effort"},
         "defaults",
     )
     return DefaultsConfig(
@@ -334,6 +340,12 @@ def _parse_defaults(value: object) -> DefaultsConfig:
             DefaultsConfig.layout,
         ),
         model=_optional_str(data.get("model"), "defaults.model"),
+        effort=_optional_literal(
+            data.get("effort"),
+            EFFORT_LEVELS,
+            "defaults.effort",
+            DefaultsConfig.effort,
+        ),
     )
 
 

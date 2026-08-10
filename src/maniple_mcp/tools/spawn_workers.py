@@ -55,6 +55,7 @@ class WorkerConfig(TypedDict, total=False):
     worktree: WorktreeConfig  # Optional: Worktree settings (branch/base)
     plugin_dir: str | list[str]  # Optional: Path(s) to plugin directory for --plugin-dir
     model: str  # Optional: Claude model to use (passed as --model <value>). Overrides defaults.model.
+    effort: str  # Optional: Effort level (passed as --effort <value>). Overrides defaults.effort. One of: low, medium, high, xhigh, max.
 
 
 def register_tools(mcp: FastMCP, ensure_connection) -> None:
@@ -666,6 +667,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             # Start agent in all panes (both Claude and Codex)
             import asyncio
             models: list[str | None] = [None] * worker_count
+            efforts: list[str | None] = [None] * worker_count
 
             async def start_agent_for_worker(index: int) -> None:
                 session = pane_sessions[index]
@@ -715,6 +717,9 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 # Resolve model: per-worker > defaults.model > None (omit --model entirely)
                 model = worker_config.get("model") or getattr(defaults, "model", None)
                 models[index] = model
+                # Resolve effort: per-worker > defaults.effort > None (omit --effort entirely)
+                effort = worker_config.get("effort") or getattr(defaults, "effort", None)
+                efforts[index] = effort
                 await backend.start_agent_in_session(
                     handle=session,
                     cli=cli,
@@ -725,6 +730,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     plugin_dir=plugin_dir,
                     trust_project_mcp=trust_project_mcp,
                     model=model,
+                    effort=effort,
                 )
 
             await asyncio.gather(*[start_agent_for_worker(i) for i in range(worker_count)])
@@ -772,6 +778,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                             str(managed.main_repo_path) if managed.main_repo_path else None
                         ),
                         model=models[i],
+                        effort=efforts[i],
                         coordinator=coordinator_identity,
                     )
             except Exception as e:

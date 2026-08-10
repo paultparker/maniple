@@ -49,6 +49,7 @@ class AgentCLI(Protocol):
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> list[str]:
         """
         Build the argument list for the CLI command.
@@ -58,6 +59,7 @@ class AgentCLI(Protocol):
             settings_file: Optional path to settings file for hook injection
             plugin_dir: Optional path(s) to plugin directory (single string or list)
             model: Optional model name to pass as --model <value> (Claude only)
+            effort: Optional effort level to pass as --effort <value> (Claude only)
 
         Returns:
             List of command-line arguments (not including the command itself)
@@ -107,6 +109,7 @@ class AgentCLI(Protocol):
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
         env_vars: dict[str, str] | None = None,
     ) -> str:
         """
@@ -120,6 +123,7 @@ class AgentCLI(Protocol):
             settings_file: Settings file for hook injection
             plugin_dir: Optional path(s) to plugin directory (single string or list)
             model: Optional model name to pass as --model <value>
+            effort: Optional effort level to pass as --effort <value>
             env_vars: Environment variables to prepend
 
         Returns:
@@ -131,6 +135,7 @@ class AgentCLI(Protocol):
             settings_file=settings_file if self.supports_settings_file() else None,
             plugin_dir=plugin_dir,
             model=model,
+            effort=effort,
         )
 
         if args:

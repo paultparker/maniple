@@ -89,6 +89,7 @@ class CodexCLI(AgentCLI):
         settings_file: str | None = None,
         plugin_dir: str | list[str] | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> list[str]:
         """
         Build Codex CLI arguments for interactive mode.
@@ -98,6 +99,7 @@ class CodexCLI(AgentCLI):
             settings_file: Ignored - Codex doesn't support settings injection
             plugin_dir: Ignored - Codex doesn't support plugin directories
             model: Ignored - Codex model selection is handled separately
+            effort: Ignored - Codex effort/reasoning selection is handled separately
 
         Returns:
             List of CLI arguments for interactive mode
@@ -112,6 +114,8 @@ class CodexCLI(AgentCLI):
         # Idle detection uses session file polling instead
 
         # Note: model is ignored - Codex model selection is handled separately
+
+        # Note: effort is ignored - Codex effort/reasoning selection is handled separately
 
         return args
 
