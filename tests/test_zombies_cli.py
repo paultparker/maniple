@@ -165,8 +165,13 @@ class TestIdleAgeCalculation:
                 "idle_age_hours": 2.0,
             }
             threshold_hours = 2
-            with patch("os.kill") as mock_kill:
+            with patch("os.kill") as mock_kill, \
+                 patch("maniple_mcp.zombies_cli._get_process_start_time") as mock_start:
                 mock_kill.return_value = None
+                # Match recorded start time exactly so the coordinator is
+                # never mistaken for defunct via an unrelated real PID that
+                # happens to be alive on the host running the suite.
+                mock_start.return_value = worker["coordinator_pid_start"]
                 result = classify_worker(worker, threshold_hours)
             # 2 hours idle >= 2 hour threshold -> forgotten
             assert result == "forgotten"
@@ -174,17 +179,26 @@ class TestIdleAgeCalculation:
     def test_idle_age_fallback_to_manifest_spawned_at(self):
         """Idle age falls back to manifest spawned_at if JSONL missing."""
         spawned_at = (datetime.now() - timedelta(hours=1.5)).isoformat()
+        coordinator_pid_start = datetime.now().isoformat()
         worker = {
             "session_id": "w-idle2",
             "name": "Hannah",
             "coordinator_pid": 6000,
-            "coordinator_pid_start": datetime.now().isoformat(),
+            "coordinator_pid_start": coordinator_pid_start,
             "spawned_at": spawned_at,
             "idle_age_hours": 1.5,
         }
         threshold_hours = 2
-        with patch("os.kill") as mock_kill:
+        with patch("os.kill") as mock_kill, \
+             patch("maniple_mcp.zombies_cli._get_process_start_time") as mock_start:
             mock_kill.return_value = None
+            # Without this mock, _coordinator_is_alive() shells out to the
+            # real `ps` for the hardcoded pid 6000. If some unrelated
+            # process on the host happens to hold that pid, its real start
+            # time will never match our ISO-format coordinator_pid_start,
+            # so the worker is misclassified "orphaned" instead of "ok" --
+            # flaky depending on host process state, not test logic.
+            mock_start.return_value = coordinator_pid_start
             result = classify_worker(worker, threshold_hours)
         # 1.5 hours idle < 2 hour threshold -> ok
         assert result == "ok"
