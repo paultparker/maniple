@@ -4,6 +4,7 @@ Spawn workers tool.
 Provides spawn_workers for creating new Claude Code worker sessions.
 """
 
+import asyncio
 import logging
 import os
 import uuid
@@ -31,6 +32,43 @@ from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
 from ..worktree import WorktreeError, create_local_worktree
 
 logger = logging.getLogger("maniple")
+
+
+def _format_stagger_summary(
+    delays: list[float],
+    loads: list[float | None],
+    threshold: float,
+    *,
+    override: float | None,
+) -> str:
+    """Render a short "staggered: ..." line describing the per-gap delays
+    chosen between worker launches, for the spawn result/coordinator
+    guidance. Returns "" when there was nothing to report (0-1 workers, or
+    an explicit override of 0)."""
+
+    if not delays:
+        return ""
+    if override == 0:
+        # 0 disables the stagger entirely -- nothing happened, nothing to report.
+        return ""
+
+    uniform = len(set(delays)) == 1
+
+    if override is not None:
+        # Explicit flat override: no load readings were taken.
+        return f"staggered: {delays[0]:g}s x{len(delays)} (override)"
+
+    non_null_loads = [load for load in loads if load is not None]
+    if uniform and non_null_loads and all(load >= threshold for load in non_null_loads):
+        return (
+            f"staggered: {delays[0]:g}s x{len(delays)} "
+            f"(load {non_null_loads[-1]:.1f} >= {threshold:g})"
+        )
+
+    parts = ", ".join(f"{d:g}s" for d in delays)
+    if non_null_loads:
+        return f"staggered: {parts} (load {non_null_loads[-1]:.1f})"
+    return f"staggered: {parts}"
 
 
 class WorktreeConfig(TypedDict, total=False):
@@ -66,6 +104,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
         ctx: Context[ServerSession, "AppContext"],
         workers: list[WorkerConfig],
         layout: Literal["auto", "new"] | None = None,
+        stagger_seconds: float | None = None,
     ) -> dict:
         """
         Spawn Claude Code worker sessions.
@@ -194,6 +233,17 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
         Args:
             workers: List of WorkerConfig dicts. Must have 1-4 workers.
             layout: "auto" (reuse windows) or "new" (fresh window).
+            stagger_seconds: Optional override for the delay between worker
+                launches. Each new Claude Code worker session spawns a large
+                retinue of MCP server processes, so launching several at once
+                can spike system load; by default spawn_workers staggers
+                launches adaptively (config `spawn.stagger_load_threshold` /
+                `spawn.stagger_max_seconds`): under low load, delays ramp
+                4s/8s/16s/... up to the max; under high load, every gap uses
+                the full max delay. Passing stagger_seconds here overrides
+                that entirely with a FLAT delay applied to every gap
+                (0 = no delay at all, the pre-stagger behavior). No delay
+                follows the last worker's launch either way.
 
         Returns:
             Dict with:
@@ -665,7 +715,6 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 pane_sessions = [panes[name] for name in pane_names[:worker_count]]
 
             # Start agent in all panes (both Claude and Codex)
-            import asyncio
             models: list[str | None] = [None] * worker_count
             efforts: list[str | None] = [None] * worker_count
 
@@ -733,7 +782,49 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     effort=effort,
                 )
 
-            await asyncio.gather(*[start_agent_for_worker(i) for i in range(worker_count)])
+            # Stagger the START of each worker's launch (except the first)
+            # by a per-gap delay, so N workers' MCP-server retinues don't all
+            # spin up at once and spike system load. Once a worker's launch
+            # task is created it still runs concurrently -- only the trigger
+            # is delayed, never the whole gather or the post-launch waits.
+            # Precedence: explicit stagger_seconds param > adaptive
+            # (config.spawn.stagger_load_threshold / stagger_max_seconds).
+            spawn_config = config.spawn
+            stagger_delays: list[float] = []
+            stagger_loads: list[float | None] = []
+
+            def _resolve_gap_delay(gap_index: int) -> tuple[float, float | None]:
+                if stagger_seconds is not None:
+                    return stagger_seconds, None
+                load = os.getloadavg()[0]
+                if load >= spawn_config.stagger_load_threshold:
+                    return spawn_config.stagger_max_seconds, load
+                ramp = min(4 * (2**gap_index), spawn_config.stagger_max_seconds)
+                return ramp, load
+
+            if worker_count > 1:
+                launch_tasks = [asyncio.create_task(start_agent_for_worker(0))]
+                for gap_index in range(worker_count - 1):
+                    delay, load = _resolve_gap_delay(gap_index)
+                    stagger_delays.append(delay)
+                    stagger_loads.append(load)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    launch_tasks.append(
+                        asyncio.create_task(start_agent_for_worker(gap_index + 1))
+                    )
+                await asyncio.gather(*launch_tasks)
+            else:
+                await asyncio.gather(*[start_agent_for_worker(i) for i in range(worker_count)])
+
+            stagger_summary = _format_stagger_summary(
+                stagger_delays,
+                stagger_loads,
+                spawn_config.stagger_load_threshold,
+                override=stagger_seconds,
+            )
+            if stagger_summary:
+                logger.info(stagger_summary)
 
             # Register all sessions
             managed_sessions = []
@@ -922,11 +1013,15 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 })
 
             # Build return value
+            coordinator_guidance = get_coordinator_guidance(worker_summaries)
+            if stagger_summary:
+                coordinator_guidance = f"{stagger_summary}\n\n{coordinator_guidance}"
+
             result = {
                 "sessions": result_sessions,
                 "layout": layout,
                 "count": len(result_sessions),
-                "coordinator_guidance": get_coordinator_guidance(worker_summaries),
+                "coordinator_guidance": coordinator_guidance,
             }
 
             # Add structured warning for programmatic access

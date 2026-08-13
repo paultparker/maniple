@@ -13,6 +13,7 @@ from maniple_mcp.config import (
     DefaultsConfig,
     EventsConfig,
     IssueTrackerConfig,
+    SpawnConfig,
     TerminalConfig,
     UsagePauseConfig,
     ZombiesConfig,
@@ -80,6 +81,12 @@ class TestDefaultConfig:
         """Default issue tracker override is None."""
         config = default_config()
         assert config.issue_tracker.override is None
+
+    def test_default_spawn(self):
+        """Default spawn config values match spec (load-aware stagger)."""
+        config = default_config()
+        assert config.spawn.stagger_load_threshold == 10.0
+        assert config.spawn.stagger_max_seconds == 16
 
     def test_default_zombies(self):
         """Default zombies config values match spec (2h idle threshold)."""
@@ -985,6 +992,90 @@ class TestDataclasses:
         assert isinstance(config.context_pause, ContextPauseConfig)
         assert isinstance(config.usage_pause, UsagePauseConfig)
         assert isinstance(config.zombies, ZombiesConfig)
+        assert isinstance(config.spawn, SpawnConfig)
+
+    def test_spawn_config_defaults(self):
+        """SpawnConfig has correct defaults (load-aware stagger)."""
+        config = SpawnConfig()
+        assert config.stagger_load_threshold == 10.0
+        assert config.stagger_max_seconds == 16
+
+
+class TestSpawnConfig:
+    """Tests for the spawn config section (stagger_load_threshold, stagger_max_seconds)."""
+
+    def test_loads_configured_values(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"stagger_load_threshold": 5, "stagger_max_seconds": 8},
+        }))
+        config = load_config(config_path)
+        assert config.spawn.stagger_load_threshold == 5
+        assert config.spawn.stagger_max_seconds == 8
+
+    def test_roundtrip_preserves_values(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+
+        original = ClaudeTeamConfig(
+            spawn=SpawnConfig(stagger_load_threshold=20, stagger_max_seconds=30)
+        )
+        save_config(original, config_path)
+        loaded = load_config(config_path)
+        assert loaded.spawn.stagger_load_threshold == 20
+        assert loaded.spawn.stagger_max_seconds == 30
+
+    def test_stagger_max_seconds_zero_is_allowed(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"stagger_max_seconds": 0},
+        }))
+        config = load_config(config_path)
+        assert config.spawn.stagger_max_seconds == 0
+
+    def test_stagger_max_seconds_cannot_be_negative(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"stagger_max_seconds": -1},
+        }))
+        with pytest.raises(ConfigError, match="stagger_max_seconds"):
+            load_config(config_path)
+
+    def test_stagger_load_threshold_must_be_a_number(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"stagger_load_threshold": "high"},
+        }))
+        with pytest.raises(ConfigError, match="stagger_load_threshold"):
+            load_config(config_path)
+
+    def test_stagger_max_seconds_must_be_a_number(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"stagger_max_seconds": "five"},
+        }))
+        with pytest.raises(ConfigError, match="stagger_max_seconds"):
+            load_config(config_path)
+
+    def test_empty_spawn_section_uses_defaults(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"version": 1, "spawn": {}}))
+        config = load_config(config_path)
+        assert config.spawn.stagger_load_threshold == 10.0
+        assert config.spawn.stagger_max_seconds == 16
+
+    def test_unknown_spawn_key_raises_error(self, tmp_path: Path):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "version": 1,
+            "spawn": {"bad_key": True},
+        }))
+        with pytest.raises(ConfigError, match="Unknown keys in spawn"):
+            load_config(config_path)
 
 
 class TestZombiesConfig:

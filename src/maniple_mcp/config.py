@@ -145,6 +145,29 @@ class UsagePauseConfig:
 
 
 @dataclass
+class SpawnConfig:
+    """`spawn_workers` launch-timing configuration.
+
+    Governs the adaptive, load-aware stagger between worker launches in
+    spawn_workers (tools/spawn_workers.py): each new Claude Code worker
+    session spawns a large retinue of MCP server processes, so launching
+    several at once can spike system load. Before each gap between worker
+    launches, spawn_workers reads the current 1-min load average
+    (os.getloadavg()) and picks a per-gap delay:
+    - load >= stagger_load_threshold: the full stagger_max_seconds delay.
+    - otherwise: an exponential ramp by gap index, capped at
+      stagger_max_seconds (4s, 8s, 16s, 16s, ... for the default max of 16).
+    No delay follows the last worker's launch. A per-call `stagger_seconds`
+    parameter on the spawn_workers MCP tool overrides this entirely with a
+    flat delay for every gap (0 disables the stagger); that override is a
+    call-time parameter only, not a config key.
+    """
+
+    stagger_load_threshold: float = 10.0
+    stagger_max_seconds: float = 16
+
+
+@dataclass
 class ZombiesConfig:
     """`maniple zombies` report thresholds.
 
@@ -172,6 +195,7 @@ class ClaudeTeamConfig:
     context_pause: ContextPauseConfig = field(default_factory=ContextPauseConfig)
     usage_pause: UsagePauseConfig = field(default_factory=UsagePauseConfig)
     zombies: ZombiesConfig = field(default_factory=ZombiesConfig)
+    spawn: SpawnConfig = field(default_factory=SpawnConfig)
 
 
 def default_config() -> ClaudeTeamConfig:
@@ -260,6 +284,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
             "context_pause",
             "usage_pause",
             "zombies",
+            "spawn",
         },
         "config",
     )
@@ -272,6 +297,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
     context_pause = _parse_context_pause(data.get("context_pause"))
     usage_pause = _parse_usage_pause(data.get("usage_pause"))
     zombies = _parse_zombies(data.get("zombies"))
+    spawn = _parse_spawn(data.get("spawn"))
     return ClaudeTeamConfig(
         version=version,
         commands=commands,
@@ -282,6 +308,7 @@ def _parse_config(data: dict) -> ClaudeTeamConfig:
         context_pause=context_pause,
         usage_pause=usage_pause,
         zombies=zombies,
+        spawn=spawn,
     )
 
 
@@ -489,6 +516,37 @@ def _parse_zombies(value: object) -> ZombiesConfig:
     )
 
 
+def _parse_spawn(value: object) -> SpawnConfig:
+    # Parse `spawn_workers` launch-timing configuration.
+    data = _ensure_dict(value, "spawn")
+    _validate_keys(data, {"stagger_load_threshold", "stagger_max_seconds"}, "spawn")
+    return SpawnConfig(
+        stagger_load_threshold=_non_negative_number(
+            data.get("stagger_load_threshold"),
+            "spawn.stagger_load_threshold",
+            SpawnConfig.stagger_load_threshold,
+        ),
+        stagger_max_seconds=_non_negative_number(
+            data.get("stagger_max_seconds"),
+            "spawn.stagger_max_seconds",
+            SpawnConfig.stagger_max_seconds,
+        ),
+    )
+
+
+def _non_negative_number(value: object, path: str, default: float) -> float:
+    # Validate optional numeric fields that must be zero or positive (0 is
+    # a valid "disabled"/no-delay value here, unlike _positive_number).
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path} must be a number")
+    number = float(value)
+    if number < 0:
+        raise ConfigError(f"{path} must be zero or greater")
+    return number
+
+
 def _positive_number(value: object, path: str, default: float) -> float:
     # Validate optional numeric fields that must be strictly positive
     # (unlike _optional_float, not constrained to the open interval (0, 1) --
@@ -604,6 +662,7 @@ __all__ = [
     "LayoutMode",
     "TerminalBackend",
     "TerminalConfig",
+    "SpawnConfig",
     "UsagePauseConfig",
     "ZombiesConfig",
     "IssueTrackerName",
