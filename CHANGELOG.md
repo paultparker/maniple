@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Workers no longer stall at Claude's "New MCP server found" trust prompt — which the agent-ready detector misreported as a launch failure. Project `.mcp.json` servers are auto-approved by default; pass `trust_project_mcp=False` per worker to preserve the prompt for untrusted checkouts.
 - Resolve an order-dependent circular import between `registry` and `utils.errors`.
+- Harden the shell-readiness probe (both tmux and iTerm backends) against a startup prompt that swallows one keystroke — e.g. oh-my-zsh's periodic "Would you like to update? [Y/n]", which previously ate the `e` of the readiness `echo` and caused a spurious "Shell not ready after 10.0s" spawn failure. The probe now resends if the marker doesn't appear within `resend_after` (2.5s) of the last send, and stays inside the original timeout. The "Shell not ready" error message also now includes the last screen lines instead of the misleading "Terminal may still be initializing" hint, making the real cause (e.g. a stuck prompt) visible.
 
 ## [0.13.0] - 2026-03-02
 

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from .cli_backends import AgentCLI
 
+from .shell_probe import SHELL_READY_MARKER, probe_shell_ready, screen_tail
 from .subprocess_cache import cached_system_profiler
 
 logger = logging.getLogger("maniple.iterm_utils")
@@ -385,9 +386,9 @@ async def close_pane(session: "ItermSession", force: bool = False) -> bool:
 # =============================================================================
 # Shell Readiness Detection
 # =============================================================================
-
-# Marker used to detect shell readiness - must be unique enough not to appear randomly
-SHELL_READY_MARKER = "MANIPLE_READY_7f3a9c"
+#
+# SHELL_READY_MARKER and the resend-on-stall probing logic live in
+# shell_probe.py, shared with the tmux backend for parity.
 
 
 async def wait_for_shell_ready(
@@ -400,7 +401,10 @@ async def wait_for_shell_ready(
 
     Sends an echo command with a unique marker and waits for it to appear
     in the terminal output. This proves the shell is accepting and executing
-    commands, regardless of prompt style.
+    commands, regardless of prompt style. Resends the probe if it stalls
+    (see `shell_probe.probe_shell_ready`) so a startup prompt that swallows
+    one keystroke (e.g. oh-my-zsh's "Would you like to update? [Y/n]")
+    doesn't cause a spurious failure.
 
     Args:
         session: iTerm2 session to monitor
@@ -410,30 +414,19 @@ async def wait_for_shell_ready(
     Returns:
         True if shell became ready, False if timeout was reached
     """
-    import asyncio
-    import time
 
-    # Send the marker command
-    await send_prompt(session, f'echo "{SHELL_READY_MARKER}"')
+    async def send_probe() -> None:
+        await send_prompt(session, f'echo "{SHELL_READY_MARKER}"')
 
-    # Wait for marker to appear in output (not in the command itself)
-    # We look for the marker at the start of a line, which indicates the echo
-    # actually executed and produced output, not just that the command was displayed
-    start_time = time.monotonic()
-    while (time.monotonic() - start_time) < timeout_seconds:
-        try:
-            content = await read_screen_text(session)
-            # Check each line - the output will be the marker on its own line
-            # (not preceded by 'echo "' which would be the command)
-            for line in content.split('\n'):
-                stripped = line.strip()
-                if stripped == SHELL_READY_MARKER:
-                    return True
-        except Exception:
-            pass
-        await asyncio.sleep(poll_interval)
+    async def read_screen() -> str:
+        return await read_screen_text(session)
 
-    return False
+    return await probe_shell_ready(
+        send_probe,
+        read_screen,
+        timeout_seconds=timeout_seconds,
+        poll_interval=poll_interval,
+    )
 
 
 # =============================================================================
@@ -826,9 +819,14 @@ async def start_agent_in_session(
     # Wait for shell to be ready
     shell_ready = await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
     if not shell_ready:
+        try:
+            tail = screen_tail(await read_screen_text(session))
+        except Exception:
+            tail = ""
+        tail = tail if tail else "(screen empty)"
         raise RuntimeError(
             f"Shell not ready after {shell_ready_timeout}s in {project_path}. "
-            "Terminal may still be initializing."
+            f"Last screen lines:\n{tail}"
         )
 
     # Build settings file for Stop hook injection if supported

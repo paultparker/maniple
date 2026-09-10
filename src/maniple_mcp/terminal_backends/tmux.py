@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from ..shell_probe import SHELL_READY_MARKER, probe_shell_ready, screen_tail
 from .base import TerminalBackend, TerminalSession
 
 if TYPE_CHECKING:
@@ -42,7 +43,6 @@ KEY_MAP: dict[str, str] = {
 
 ISSUE_ID_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]*\d[A-Za-z0-9]*\b")
 
-SHELL_READY_MARKER = "MANIPLE_READY_7f3a9c"
 CODEX_PRE_ENTER_DELAY = 0.5
 TMUX_SESSION_PREFIX = "maniple"
 LEGACY_TMUX_SESSION_PREFIX = "claude-team"
@@ -478,9 +478,14 @@ class TmuxBackend(TerminalBackend):
             handle, timeout_seconds=shell_ready_timeout
         )
         if not shell_ready:
+            try:
+                tail = screen_tail(await self.read_screen_text(handle))
+            except Exception:
+                tail = ""
+            tail = tail if tail else "(screen empty)"
             raise RuntimeError(
                 f"Shell not ready after {shell_ready_timeout}s in {project_path}. "
-                "Terminal may still be initializing."
+                f"Last screen lines:\n{tail}"
             )
 
         # Optionally inject a Stop hook using a settings file (Claude only).
@@ -581,22 +586,25 @@ class TmuxBackend(TerminalBackend):
         timeout_seconds: float = 10.0,
         poll_interval: float = 0.1,
     ) -> bool:
-        """Wait for the shell to accept input by echoing a marker."""
-        import time
+        """Wait for the shell to accept input by echoing a marker.
 
-        # Kick off the marker echo and then look for the echoed line.
-        await self.send_prompt(session, f'echo "{SHELL_READY_MARKER}"', submit=True)
+        Resends the probe if it stalls (see `shell_probe.probe_shell_ready`)
+        so a startup prompt that swallows one keystroke (e.g. oh-my-zsh's
+        "Would you like to update? [Y/n]") doesn't cause a spurious failure.
+        """
 
-        start_time = time.monotonic()
-        while (time.monotonic() - start_time) < timeout_seconds:
-            # Scan visible pane content for the marker on its own line.
-            content = await self.read_screen_text(session)
-            for line in content.splitlines():
-                if line.strip() == SHELL_READY_MARKER:
-                    return True
-            await asyncio.sleep(poll_interval)
+        async def send_probe() -> None:
+            await self.send_prompt(session, f'echo "{SHELL_READY_MARKER}"', submit=True)
 
-        return False
+        async def read_screen() -> str:
+            return await self.read_screen_text(session)
+
+        return await probe_shell_ready(
+            send_probe,
+            read_screen,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
 
     async def _wait_for_agent_ready(
         self,
