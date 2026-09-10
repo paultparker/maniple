@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maniple spawn fix: readiness probe vs. oh-my-zsh update prompt</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf7; --fg: #1e1e1e; --muted: #5a5a5a; --card: #ffffff; --border: #d9d5cc;
+    --accent: #0b5d8a; --ok: #1f7a3a; --bad: #a12a2a; --code-bg: #f1efe9; --code-fg: #1e1e1e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --fg: #e8e6e1; --muted: #a9a69f; --card: #1f2227; --border: #3a3e46;
+      --accent: #7cc0e8; --ok: #7ad48f; --bad: #f08c8c; --code-bg: #262a31; --code-fg: #e8e6e1;
+    }
+  }
+  html, body { background: var(--bg); color: var(--fg); margin: 0; }
+  body { font: 16px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; padding: 24px 16px 48px; }
+  main { max-width: 860px; margin: 0 auto; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; color: var(--fg); background: var(--bg); }
+  h2 { font-size: 1.2rem; margin: 28px 0 8px; color: var(--accent); background: var(--bg); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .dateline { font-size: 0.85rem; color: var(--muted); background: var(--bg); margin-bottom: 20px; }
+  .card { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+  .ok { color: var(--ok); background: var(--card); font-weight: 600; }
+  .bad { color: var(--bad); background: var(--card); font-weight: 600; }
+  pre, code { background: var(--code-bg); color: var(--code-fg); border-radius: 4px; }
+  code { padding: 1px 5px; font-size: 0.92em; }
+  pre { padding: 10px 12px; overflow-x: auto; font-size: 0.85rem; line-height: 1.4; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); color: var(--fg); }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; background: var(--card); color: var(--fg); }
+  th { background: var(--code-bg); color: var(--fg); }
+  ul { padding-left: 22px; } li { margin: 4px 0; }
+  a { color: var(--accent); background: transparent; }
+</style>
+</head>
+<body>
+<main>
+<h1>Maniple spawn fix: readiness probe vs. oh-my-zsh update prompt</h1>
+<div class="dateline">Produced 2026-09-09 21:37 CDT · First version · Repo: <code>~/Dropbox/code/maniple</code>, merged to <code>main</code> as <code>d4073dc</code></div>
+
+<h2>The bug (2026-09-09, 3 of 3 spawns failed)</h2>
+<div class="card">
+<p>When maniple spawns a worker it opens a fresh shell and types <code>echo "MANIPLE_READY_7f3a9c"</code> + Enter, then watches the pane for that marker on its own line. If it never appears within 10 s, spawn fails with <span class="bad">"Shell not ready after 10.0s … Terminal may still be initializing."</span></p>
+<p>oh-my-zsh's periodic update check prints <code>Would you like to update? [Y/n]</code> and does a <strong>one-keystroke</strong> <code>read -r -k 1</code>. When that prompt was already on screen, it ate the <code>e</code>. The shell then ran <code>cho "MANIPLE_READY_…"</code> → <code>command not found</code>. The marker never printed, the probe was never re-sent, and every subsequent worker shell hit the same prompt (answering with <code>e</code> does not record the check, so OMZ asks again next shell). Load was normal; the error text's "still initializing" hint pointed at the wrong cause.</p>
+</div>
+
+<h2>Fix options considered</h2>
+<table>
+<tr><th>Option</th><th>Verdict</th><th>Why</th></tr>
+<tr><td>Set <code>DISABLE_AUTO_UPDATE=true</code> in the worker shell's environment</td><td class="bad">Rejected</td><td>Works on tmux (<code>new-window -e</code>) but iTerm launches the login shell from its profile with no pre-shell env hook → breaks backend parity. Also fixes only OMZ, not the class of "something ate a keystroke".</td></tr>
+<tr><td>Edit <code>~/.zshrc</code> to disable/auto the OMZ prompt</td><td class="bad">Not done (Paul's call)</td><td>Config edit outside the repo; would also hide the fix's need. Optional belt-and-suspenders, see below.</td></tr>
+<tr><td><strong>Harden the probe: re-send on stall, both backends</strong></td><td class="ok">Chosen</td><td>Backend-agnostic, no env plumbing, recovers from any one-shot keystroke eater. Plus the error now shows the last screen lines so the next such failure diagnoses itself.</td></tr>
+</table>
+
+<h2>What changed</h2>
+<div class="card">
+<ul>
+<li><strong>New shared module</strong> <code>src/maniple_mcp/shell_probe.py</code>: <code>probe_shell_ready()</code> sends the echo, polls the screen every 0.1 s, and <strong>re-sends the probe if the marker hasn't appeared 2.5 s after the last send</strong>, until the overall timeout (still 10 s). Injectable clock/sleep so unit tests are instant. <code>screen_tail()</code> returns the last 8 non-blank screen lines.</li>
+<li><strong>tmux</strong> (<code>terminal_backends/tmux.py</code>) and <strong>iTerm</strong> (<code>iterm_utils.py</code>): their <code>wait_for_shell_ready</code> functions are now thin wrappers over the shared probe. Signatures and bool returns unchanged, so existing tests that patch them still pass.</li>
+<li><strong>Error message</strong> on both backends: <code>Shell not ready after 10.0s in &lt;path&gt;. Last screen lines:</code> followed by the pane tail. The misleading "Terminal may still be initializing" hint is gone.</li>
+<li><strong>Tests</strong>: <code>tests/test_shell_probe.py</code> (8, unit) and <code>tests/test_shell_ready_parity.py</code> (6, both backends: recovery from a swallowed probe, tail in the error, empty-screen fallback). Mutation-audited: disabling the resend branch fails exactly the swallowed-probe tests.</li>
+<li><code>CHANGELOG.md</code> Unreleased/Fixed entry.</li>
+</ul>
+</div>
+
+<h2>Verification</h2>
+<div class="card">
+<p>Because Paul had just accepted the OMZ update, the real prompt won't recur for ~13 days. A live reproducer (<code>scratchpad/repro_omz_prompt.py</code>) opens a tmux pane whose shell shows a fake <code>[Y/n]</code> <code>read -k 1</code> prompt and then execs interactive zsh, and runs the real <code>TmuxBackend</code> probe against it.</p>
+<table>
+<tr><th>Code</th><th>Result</th><th>Pane after probe</th></tr>
+<tr><td>Pre-fix <code>main</code></td><td class="bad">ready=False after 6.08 s (timed out)</td><td><code>cho "MANIPLE_READY_7f3a9c"</code> / <code>zsh: command not found: cho</code></td></tr>
+<tr><td>Merged <code>main</code></td><td class="ok">ready=True after 2.77 s</td><td>first probe eaten as before; second <code>echo</code> lands at the real prompt and prints the marker</td></tr>
+</table>
+<p>Test suite: 99 passed across the probe, parity, worker-hook, effort, tmux and iTerm test files on merged main. Full suite in the worktree: 1076 passed, 3 failed. The 3 failures are pre-existing and unrelated: two <code>test_zombies_cli</code> PID-liveness classification tests fail identically on unmodified main, and <code>test_blocked_question_e2e</code> is an opt-in live-claude test that hit a folder-trust dialog.</p>
+</div>
+
+<h2>Deployment</h2>
+<div class="card">
+<p>The maniple MCP server is configured as <code>uvx --from ~/Dropbox/code/maniple maniple</code>, so the merge is live for any <strong>newly started</strong> Claude Code session. Already-running coordinators keep the old code until restarted.</p>
+</div>
+
+<h2>Open items for Paul</h2>
+<div class="card">
+<ul>
+<li>OMZ update mode is still the default <code>prompt</code>. Maniple now survives it; if you'd rather never see the blocking prompt, add <code>zstyle ':omz:update' mode reminder</code> (non-blocking notice) or <code>auto</code> to <code>~/.zshrc</code>. Not done: your config, your call.</li>
+<li><code>shell_ready_timeout</code> is still hard-coded at 10 s in both backends (old memory note suggested making it configurable). Separate change if wanted.</li>
+<li>Main still has your uncommitted <code>.gitignore</code>/<code>pyproject.toml</code>/<code>uv.lock</code> edits and untracked HANDOFF files; untouched by this merge.</li>
+</ul>
+</div>
+</main>
+</body>
+</html>
