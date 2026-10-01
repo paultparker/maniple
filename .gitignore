@@ -59,3 +59,9 @@ htmlcov/
 
 # Session handoffs (personal content — repo fork is public; synced via Dropbox, not git)
 plans/
+
+# Local-only Claude Code hooks (personal workflow; repo fork is public)
+.claude/hooks/
+
+# HTML explainers at repo root (contain local paths / personal workflow; fork is public)
+/*.html
