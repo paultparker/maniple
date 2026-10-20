@@ -183,9 +183,17 @@ class TestProfileExpansion:
         assert out["extra_args"] == [
             "--permission-mode",
             "dontAsk",
+            "--restricted",
+            "--strict-mcp-config",
             "--tools",
-            "Read,Grep,Glob,WebFetch,WebSearch",
+            "WebFetch,WebSearch",
+            "--allowedTools",
+            "WebFetch,WebSearch",
         ]
+        # No file-read tool: lethal-trifecta guard.
+        for t in ("Read", "Grep", "Glob"):
+            assert t not in out["extra_args"][out["extra_args"].index("--tools") + 1].split(",")
+        assert out["worker_settings"]["permissions"]["blockReadsOutsideWorkingDirectories"] is True
         assert out["env"] == {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
         ws = out["worker_settings"]
         assert ws["disableClaudeAiConnectors"] is True

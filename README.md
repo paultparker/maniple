@@ -424,7 +424,8 @@ WorkerConfig fields:
                               One of: low, medium, high, xhigh, max. Overrides defaults.effort.
   profile: str              - Optional named preset (Claude only). "web-reader" launches a
                               restricted reader of untrusted web content with NO skip_permissions:
-                              dontAsk mode, --tools Read,Grep,Glob,WebFetch,WebSearch, mcp__* /
+                              dontAsk mode, --restricted (ignores user/project settings), --tools
+                              WebFetch,WebSearch only (no file reads), mcp__* /
                               Bash / Edit / Write / Agent / SendMessage ... denied, claude.ai
                               connectors off, no worktree, trust_project_mcp=false. Explicit
                               fields override scalars and extend collections. Combining it with

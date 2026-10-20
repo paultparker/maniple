@@ -5,8 +5,9 @@ A *profile* is a preset bundle of WorkerConfig fields. Currently one exists:
 
 ``web-reader``
     A restricted worker for reading untrusted web content. It is launched in
-    ``dontAsk`` permission mode with a positive ``--tools`` list (Read, Grep,
-    Glob, WebFetch, WebSearch), ``mcp__*`` and every write/shell/messaging tool
+    ``dontAsk`` permission mode and ``--restricted`` with a positive ``--tools``
+    list of WebFetch and WebSearch only (no file-read tool), ``mcp__*`` and every
+    write/shell/messaging tool
     denied through the per-worker ``--settings`` file, claude.ai connectors
     disabled, and no worktree. It exists so research workers need not run with
     ``skip_permissions``.
@@ -32,14 +33,25 @@ WEB_READER_PROFILE: dict[str, Any] = {
     "extra_args": [
         "--permission-mode",
         "dontAsk",
+        # --restricted ignores the user's/project's settings files (so Paul's
+        # broad Read(**)/Bash(*) allows don't apply) while the per-worker
+        # --settings file still does. --tools is WebFetch,WebSearch ONLY: no
+        # file-read tool, so a fetched page can't make the worker read ~/.env
+        # (lethal trifecta). --allowedTools is required because dontAsk under
+        # --restricted otherwise denies WebFetch to non-pre-approved domains.
+        "--restricted",
+        "--strict-mcp-config",
         "--tools",
-        "Read,Grep,Glob,WebFetch,WebSearch",
+        "WebFetch,WebSearch",
+        "--allowedTools",
+        "WebFetch,WebSearch",
     ],
     "env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
     "worker_settings": {
         "disableClaudeAiConnectors": True,
         "permissions": {
             "defaultMode": "dontAsk",
+            "blockReadsOutsideWorkingDirectories": True,
             "deny": [
                 "mcp__*",
                 "Bash",

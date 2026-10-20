@@ -213,7 +213,9 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 worker for reading untrusted web content WITHOUT skip_permissions.
                 Expands to skip_permissions=False, trust_project_mcp=False,
                 use_worktree=False, extra_args=["--permission-mode", "dontAsk",
-                "--tools", "Read,Grep,Glob,WebFetch,WebSearch"],
+                "--restricted", "--strict-mcp-config", "--tools", "WebFetch,WebSearch",
+                "--allowedTools", "WebFetch,WebSearch"] (no file-read tools; --restricted
+                ignores user/project settings so broad user allows don't apply),
                 env={"ENABLE_CLAUDEAI_MCP_SERVERS": "false"} and a worker_settings
                 that sets disableClaudeAiConnectors, defaultMode=dontAsk and denies
                 mcp__*, Bash, Edit, Write, Agent, SendMessage and the other
