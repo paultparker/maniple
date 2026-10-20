@@ -28,7 +28,11 @@ from ..registry import SessionStatus
 from ..terminal_backends import ItermBackend, MAX_PANES_PER_TAB
 from ..utils import HINTS, error_response, get_env_with_fallback, get_worktree_tracker_dir
 from ..worker_manifest import write_worker_manifest
-from ..worker_profiles import WorkerConfigError, expand_profile
+from ..worker_profiles import (
+    WorkerConfigError,
+    check_web_reader_dir,
+    expand_profile,
+)
 from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
 from ..worktree import WorktreeError, create_local_worktree
 
@@ -463,6 +467,14 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                             f"Project path does not exist for worker {i}: {repo_path}",
                             hint=HINTS["project_path_missing"],
                         )
+
+                # web-reader must run in an empty dedicated directory so a
+                # fetched page has nothing local to steer it at.
+                if w.get("profile") == "web-reader":
+                    try:
+                        check_web_reader_dir(repo_path)
+                    except WorkerConfigError as exc:
+                        return error_response(f"Worker {i}: {exc}")
 
                 # Step 2: Create worktree if requested (default True)
                 if use_worktree:

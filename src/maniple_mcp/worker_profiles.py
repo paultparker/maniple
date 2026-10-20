@@ -136,6 +136,25 @@ def validate_worker_launch_fields(config: dict) -> None:
             raise WorkerConfigError(f"'output_file' must be an absolute path: {of!r}")
 
 
+# Entries tolerated in a web-reader directory: OS cruft only. Maniple itself
+# creates nothing in the project directory (transcripts live under ~/.claude).
+_WEB_READER_TOLERATED = {".DS_Store"}
+
+
+def check_web_reader_dir(path) -> None:
+    """Require ``path`` to be an empty dedicated directory (no .git, no files)."""
+    from pathlib import Path
+
+    p = Path(path)
+    msg = f"web-reader requires an empty dedicated directory (got {p})"
+    if not p.is_dir():
+        raise WorkerConfigError(msg)
+    if (p / ".git").exists() or (p / ".git").is_symlink():
+        raise WorkerConfigError(msg)
+    if any(e.name not in _WEB_READER_TOLERATED for e in p.iterdir()):
+        raise WorkerConfigError(msg)
+
+
 def expand_profile(config: dict) -> dict:
     """Return ``config`` with its ``profile`` (if any) expanded.
 

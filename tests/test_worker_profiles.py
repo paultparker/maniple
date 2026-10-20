@@ -638,3 +638,45 @@ class TestMaybeWriteOutputFile:
         monkeypatch.setattr(idle_detection, "is_idle", lambda path, sid: True)
         assert s.is_idle() is True
         assert out.read_text().endswith("\nDONE")
+
+
+# ---------------------------------------------------------------------------
+# web-reader requires an empty dedicated directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setup", ["file", "git_dir", "git_file"])
+async def test_web_reader_rejects_non_empty_dir(tmp_path, monkeypatch, setup):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    if setup == "file":
+        (repo / "notes.txt").write_text("x")
+    elif setup == "git_dir":
+        (repo / ".git").mkdir()
+    else:
+        (repo / ".git").write_text("gitdir: /elsewhere")
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
+    )
+    assert "web-reader requires an empty dedicated directory" in json.dumps(result, default=str)
+    assert backend.started == [] and backend.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_non_web_reader_unaffected_by_non_empty_dir(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    (repo / "notes.txt").write_text("x")
+    await tool.run(
+        {"workers": [{"project_path": str(repo), "use_worktree": False}]}, context=ctx
+    )
+    assert len(backend.started) == 1
+
+
+@pytest.mark.asyncio
+async def test_web_reader_tolerates_ds_store(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    (repo / ".DS_Store").write_text("")
+    await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
+    )
+    assert len(backend.started) == 1
