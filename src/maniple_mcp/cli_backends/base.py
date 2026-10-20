@@ -102,6 +102,19 @@ class AgentCLI(Protocol):
         """
         ...
 
+    def supports_extra_args(self) -> bool:
+        """Whether build_full_command honours ``extra_args`` (default False)."""
+        return False
+
+    def settings_injection_active(self) -> bool:
+        """Whether the per-worker --settings file will actually be passed.
+
+        Callers that rely on settings for restrictions (worker_settings) must
+        fail closed when this is False. (For Claude this is False for a custom
+        commands.claude / MANIPLE_COMMAND wrapper.)
+        """
+        return self.supports_settings_file()
+
     def build_full_command(
         self,
         *,
@@ -111,6 +124,7 @@ class AgentCLI(Protocol):
         model: str | None = None,
         effort: str | None = None,
         env_vars: dict[str, str] | None = None,
+        extra_args: list[str] | None = None,
     ) -> str:
         """
         Build the complete command string including env vars.
@@ -125,6 +139,10 @@ class AgentCLI(Protocol):
             model: Optional model name to pass as --model <value>
             effort: Optional effort level to pass as --effort <value>
             env_vars: Environment variables to prepend
+            extra_args: Extra CLI arguments appended after the built args.
+                EVERY one is shlex.quote'd (the line is run by zsh, so e.g.
+                ``mcp__*`` would otherwise glob-fail). Ignored for CLIs whose
+                ``supports_extra_args()`` is False.
 
         Returns:
             Complete command string ready for shell execution
@@ -140,6 +158,9 @@ class AgentCLI(Protocol):
 
         if args:
             cmd = f"{cmd} {' '.join(args)}"
+
+        if extra_args and self.supports_extra_args():
+            cmd = f"{cmd} {' '.join(shlex.quote(a) for a in extra_args)}"
 
         # Always mark worker launches with MANIPLE_WORKER=1 -- this is the
         # single choke point both terminal backends (tmux, iTerm) funnel

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Restricted workers: `spawn_workers` accepts `profile` (`"web-reader"` preset: dontAsk, positive `--tools` list, `mcp__*`/shell/write/messaging tools denied, no worktree -- an alternative to `skip_permissions` for reading untrusted web content), `worker_settings` (deep-merged into the per-worker `--settings` JSON; hooks appended, lists concatenated), `extra_args` (each shell-quoted), `env`, and `output_file` (worker's final message written, with an UNTRUSTED header, when it goes idle). Claude workers only; launch fails closed if the settings file can't be injected.
 - Blocked-on-question detection: a master session can now detect when a worker is stalled on an `AskUserQuestion` prompt (which stop-hook idle detection misses) and answer it.
   - `wait_for_worker` MCP tool — blocking wait that distinguishes `idle` / `waiting_input` / `stuck`.
   - `answer_worker_question` MCP tool — answer a worker's pending question by option number, including multi-select via a keystroke sequence.

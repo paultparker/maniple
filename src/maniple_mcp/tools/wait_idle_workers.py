@@ -113,6 +113,17 @@ def register_tools(mcp: FastMCP) -> None:
                 hint=HINTS["no_jsonl_file"],
             )
 
+        def _flush_output_files(idle_ids: list[str]) -> None:
+            # Write WorkerConfig.output_file for sessions just reported idle
+            # (this tool polls idle_detection directly, bypassing
+            # ManagedSession.is_idle()). Best-effort and idempotent.
+            from ..output_file import maybe_write_output_file
+
+            for sid in idle_ids:
+                sess = registry.resolve(sid)
+                if sess is not None and sess.agent_type == "claude":
+                    maybe_write_output_file(sess)
+
         # Wait based on mode
         if mode == "any":
             result = await wait_for_any_idle_impl(
@@ -120,6 +131,8 @@ def register_tools(mcp: FastMCP) -> None:
                 timeout=timeout,
                 poll_interval=poll_interval,
             )
+            if result["idle_session_id"]:
+                _flush_output_files([result["idle_session_id"]])
             # Convert to common format
             idle_session_ids = [result["idle_session_id"]] if result["idle_session_id"] else []
             return {
@@ -142,6 +155,7 @@ def register_tools(mcp: FastMCP) -> None:
             # Update statuses for idle sessions
             for session_id in result["idle_session_ids"]:
                 registry.update_status(session_id, SessionStatus.READY)
+            _flush_output_files(list(result["idle_session_ids"]))
 
             return {
                 "session_ids": session_ids,

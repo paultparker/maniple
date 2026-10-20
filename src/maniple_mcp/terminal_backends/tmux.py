@@ -471,8 +471,21 @@ class TmuxBackend(TerminalBackend):
         trust_project_mcp: bool = True,
         model: str | None = None,
         effort: str | None = None,
+        worker_settings: dict | None = None,
+        extra_args: list[str] | None = None,
     ) -> None:
         """Start a CLI agent in an existing tmux pane."""
+        # Fail closed: restrictions in worker_settings only take effect via the
+        # per-worker --settings file, which custom commands/Codex don't get.
+        if worker_settings and not (
+            stop_hook_marker_id and cli.settings_injection_active()
+        ):
+            raise RuntimeError(
+                "worker_settings requires the per-worker --settings file, which "
+                "is not injected for this agent/command (custom commands.claude "
+                "or MANIPLE_COMMAND, non-Claude agent, or no marker id). "
+                "Refusing to launch an unrestricted worker."
+            )
         # Ensure the shell is responsive before we send the launch command.
         shell_ready = await self._wait_for_shell_ready(
             handle, timeout_seconds=shell_ready_timeout
@@ -494,7 +507,9 @@ class TmuxBackend(TerminalBackend):
             from ..iterm_utils import build_stop_hook_settings_file
 
             settings_file = build_stop_hook_settings_file(
-                stop_hook_marker_id, trust_project_mcp=trust_project_mcp
+                stop_hook_marker_id,
+                trust_project_mcp=trust_project_mcp,
+                **({"worker_settings": worker_settings} if worker_settings else {}),
             )
 
         # Build the CLI command (with env vars and settings) for this agent.
@@ -505,6 +520,7 @@ class TmuxBackend(TerminalBackend):
             model=model,
             effort=effort,
             env_vars=env,
+            extra_args=extra_args,
         )
 
         # Capture stdout/stderr if requested (useful for JSONL idle detection).

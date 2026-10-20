@@ -251,6 +251,12 @@ class ManagedSession:
     # Cached Codex JSONL path (discovered at spawn time via marker polling)
     codex_jsonl_path: Optional[Path] = None
 
+    # WorkerConfig.output_file: where to write the worker's final message when
+    # it goes idle (see output_file.py). output_file_written is the path
+    # actually written ("" = attempted and failed), None = not yet written.
+    output_file: Optional[str] = None
+    output_file_written: Optional[str] = None
+
     def __post_init__(self):
         """Auto-populate terminal_id from terminal_session if not set."""
         if self.terminal_id is None:
@@ -399,7 +405,12 @@ class ManagedSession:
             jsonl_path = self.get_jsonl_path()
             if not jsonl_path or not jsonl_path.exists():
                 return False
-            return check_is_idle(jsonl_path, self.session_id)
+            idle = check_is_idle(jsonl_path, self.session_id)
+            if idle and self.output_file and self.output_file_written is None:
+                from .output_file import maybe_write_output_file
+
+                maybe_write_output_file(self)
+            return idle
 
     def get_conversation_stats(self) -> dict | None:
         """

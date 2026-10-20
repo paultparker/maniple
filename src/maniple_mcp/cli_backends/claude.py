@@ -161,6 +161,9 @@ class ClaudeCLI(AgentCLI):
         """
         return "stop_hook"
 
+    def supports_extra_args(self) -> bool:
+        return True
+
     def supports_settings_file(self) -> bool:
         """
         Claude supports --settings for hook injection.

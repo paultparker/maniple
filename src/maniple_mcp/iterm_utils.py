@@ -600,7 +600,11 @@ def _write_if_changed(path: "Path", content: str) -> None:
     os.replace(tmp_path, path)
 
 
-def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True) -> str:
+def build_stop_hook_settings_file(
+    marker_id: str,
+    trust_project_mcp: bool = True,
+    worker_settings: Optional[dict] = None,
+) -> str:
     """
     Build a settings file for Stop hook injection.
 
@@ -623,6 +627,13 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
 
     Args:
         marker_id: Unique ID to embed in the marker (typically session_id)
+        trust_project_mcp: Auto-approve the project's .mcp.json servers.
+        worker_settings: Optional extra settings deep-merged into the file
+            AFTER maniple's own settings (see worker_profiles.
+            deep_merge_settings): dicts merge recursively, lists concatenate
+            (so extra hooks are APPENDED to maniple's -- the Stop hook that
+            drives idle detection is never replaced -- and permissions.deny
+            entries accumulate), scalars from worker_settings win.
 
     Returns:
         Path to the settings file (suitable for --settings flag)
@@ -765,8 +776,13 @@ def build_stop_hook_settings_file(marker_id: str, trust_project_mcp: bool = True
     if trust_project_mcp:
         settings["enableAllProjectMcpServers"] = True
 
+    if worker_settings:
+        from .worker_profiles import deep_merge_settings
+
+        settings = deep_merge_settings(settings, worker_settings)
+
     # Use marker_id as filename for deterministic, reusable files
-    settings_file = settings_dir / f"worker-{marker_id}.json"
+    settings_file =settings_dir / f"worker-{marker_id}.json"
     settings_file.write_text(json.dumps(settings, indent=2))
 
     return str(settings_file)
@@ -786,6 +802,8 @@ async def start_agent_in_session(
     trust_project_mcp: bool = True,
     model: Optional[str] = None,
     effort: Optional[str] = None,
+    worker_settings: Optional[dict] = None,
+    extra_args: Optional[list[str]] = None,
 ) -> None:
     """
     Start an agent CLI in an existing iTerm2 session.
@@ -812,10 +830,24 @@ async def start_agent_in_session(
             False when pointing a worker at an untrusted checkout.
         model: Optional model name to pass as --model <value> (Claude only)
         effort: Optional effort level to pass as --effort <value> (Claude only)
+        worker_settings: Optional dict deep-merged into the per-worker
+            --settings JSON (Claude only). Fails closed (RuntimeError) if the
+            settings file cannot be injected.
+        extra_args: Optional extra CLI args, each shell-quoted (Claude only)
 
     Raises:
         RuntimeError: If shell not ready or agent fails to start within timeout
     """
+    if worker_settings and not (
+        stop_hook_marker_id and cli.settings_injection_active()
+    ):
+        raise RuntimeError(
+            "worker_settings requires the per-worker --settings file, which is "
+            "not injected for this agent/command (custom commands.claude or "
+            "MANIPLE_COMMAND, non-Claude agent, or no marker id). Refusing to "
+            "launch an unrestricted worker."
+        )
+
     # Wait for shell to be ready
     shell_ready = await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
     if not shell_ready:
@@ -833,7 +865,9 @@ async def start_agent_in_session(
     settings_file = None
     if stop_hook_marker_id and cli.supports_settings_file():
         settings_file = build_stop_hook_settings_file(
-            stop_hook_marker_id, trust_project_mcp=trust_project_mcp
+            stop_hook_marker_id,
+            trust_project_mcp=trust_project_mcp,
+            **({"worker_settings": worker_settings} if worker_settings else {}),
         )
 
     # Build the full command using the AgentCLI abstraction
@@ -844,6 +878,7 @@ async def start_agent_in_session(
         model=model,
         effort=effort,
         env_vars=env,
+        extra_args=extra_args,
     )
 
     # Add output capture via tee if requested
