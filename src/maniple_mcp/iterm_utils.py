@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from .cli_backends import AgentCLI
 
+from .cli_backends.base import UntrustedFolderError
 from .shell_probe import SHELL_READY_MARKER, probe_shell_ready, screen_tail
 from .subprocess_cache import cached_system_profiler
 
@@ -534,6 +535,7 @@ async def wait_for_agent_ready(
     import time
 
     patterns = cli.ready_patterns()
+    trust_patterns = cli.untrusted_folder_patterns()
     start_time = time.monotonic()
     last_content = None
     stable_reads = 0
@@ -542,6 +544,10 @@ async def wait_for_agent_ready(
         try:
             content = await read_screen_text(session)
             lines = content.split('\n')
+
+            # A trust dialog never resolves on its own: fail immediately.
+            if any(p in content for p in trust_patterns):
+                raise UntrustedFolderError()
 
             # Check if content is stable (same as last read)
             if content == last_content:
@@ -561,6 +567,8 @@ async def wait_for_agent_ready(
                             )
                             return True
 
+        except UntrustedFolderError:
+            raise
         except Exception as e:
             # Screen read failed, retry
             logger.debug(f"Screen read failed during agent ready check: {e}")
@@ -895,9 +903,13 @@ async def start_agent_in_session(
     await send_prompt(session, cmd)
 
     # Wait for agent to actually start (detect ready patterns, not blind sleep)
-    if not await wait_for_agent_ready(
-        session, cli, timeout_seconds=agent_ready_timeout
-    ):
+    try:
+        agent_ready = await wait_for_agent_ready(
+            session, cli, timeout_seconds=agent_ready_timeout
+        )
+    except UntrustedFolderError:
+        raise UntrustedFolderError(project_path) from None
+    if not agent_ready:
         raise RuntimeError(
             f"{cli.engine_id} failed to start in {project_path} within "
             f"{agent_ready_timeout}s. Check that '{cli.command()}' command is "

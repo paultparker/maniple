@@ -10,6 +10,24 @@ from abc import abstractmethod
 from typing import Literal, Protocol, runtime_checkable
 
 
+class UntrustedFolderError(RuntimeError):
+    """The agent CLI is parked at a 'trust this folder' dialog.
+
+    Raised from the readiness wait; callers that know the project path
+    re-raise it with the path so the message names the folder.
+    """
+
+    def __init__(self, project_path: str | None = None):
+        self.project_path = project_path
+        where = project_path or "this folder"
+        super().__init__(
+            f"Claude Code is waiting at its 'trust this folder' dialog for "
+            f"{where}: the folder has never been trusted. Open `claude` there "
+            "once interactively and choose 'Yes, I trust this folder' (or have "
+            "the supervisor's user approve trusting it), then retry spawn_workers."
+        )
+
+
 @runtime_checkable
 class AgentCLI(Protocol):
     """
@@ -78,6 +96,13 @@ class AgentCLI(Protocol):
             List of strings to search for in terminal output
         """
         ...
+
+    def untrusted_folder_patterns(self) -> list[str]:
+        """Screen text meaning the CLI is blocked on a folder-trust dialog.
+
+        Default: none (only Claude Code shows such a dialog).
+        """
+        return []
 
     @abstractmethod
     def idle_detection_method(self) -> Literal["stop_hook", "jsonl_stream", "none"]:

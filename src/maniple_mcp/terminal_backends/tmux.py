@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from ..cli_backends.base import UntrustedFolderError
 from ..shell_probe import SHELL_READY_MARKER, probe_shell_ready, screen_tail
 from .base import TerminalBackend, TerminalSession
 
@@ -532,11 +533,14 @@ class TmuxBackend(TerminalBackend):
         await self.send_prompt(handle, cmd, submit=True)
 
         # Wait for the agent to become ready before returning.
-        agent_ready = await self._wait_for_agent_ready(
-            handle,
-            cli,
-            timeout_seconds=agent_ready_timeout,
-        )
+        try:
+            agent_ready = await self._wait_for_agent_ready(
+                handle,
+                cli,
+                timeout_seconds=agent_ready_timeout,
+            )
+        except UntrustedFolderError:
+            raise UntrustedFolderError(project_path) from None
         if not agent_ready:
             raise RuntimeError(
                 f"{cli.engine_id} failed to start in {project_path} within "
@@ -635,6 +639,7 @@ class TmuxBackend(TerminalBackend):
         import time
 
         patterns = cli.ready_patterns()
+        trust_patterns = cli.untrusted_folder_patterns()
         start_time = time.monotonic()
         last_content = None
         stable_reads = 0
@@ -642,6 +647,9 @@ class TmuxBackend(TerminalBackend):
         while (time.monotonic() - start_time) < timeout_seconds:
             # Read the pane content and only check once output stabilizes.
             content = await self.read_screen_text(session)
+            # A trust dialog never resolves on its own: fail immediately.
+            if any(p in content for p in trust_patterns):
+                raise UntrustedFolderError()
             if content == last_content:
                 stable_reads += 1
             else:

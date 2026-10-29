@@ -153,6 +153,10 @@ class ClaudeCLI(AgentCLI):
             "▝▜█████▛▘",  # Middle of robot
         ]
 
+    def untrusted_folder_patterns(self) -> list[str]:
+        """Claude shows a blocking trust dialog in never-opened directories."""
+        return ["Yes, I trust this folder"]
+
     def idle_detection_method(self) -> Literal["stop_hook", "jsonl_stream", "none"]:
         """
         Claude uses Stop hook for idle detection.
