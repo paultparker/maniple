@@ -13,7 +13,7 @@ from maniple_mcp.terminal_backends.tmux import TmuxBackend
 
 TRUST_DIALOG_SCREEN = """\
  Accessing workspace:
- /Users/paulparker/Dropbox/code/paseo-patches
+ /tmp/example-project
  Quick safety check: Is this a project you created or one you trust? (Like your
  own code, a well-known open source project, or work from your team). If not,
  take a moment to review what's in this folder first.
