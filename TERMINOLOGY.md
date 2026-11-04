@@ -4,7 +4,7 @@ Project-specific terms whose meaning isn't obvious from the code. One entry per 
 
 - **zombie worker** — a spawned worker Claude Code instance still running (in its tmux window / iTerm pane) after its coordinator session is dead, defunct, or has lost track of it. Heavy: each is a full Claude Code process. Distinct from a *recovered* worker (known via event log) and an *adopted* worker (re-registered via `adopt_worker`).
 - **coordinator** — the manager Claude Code session whose maniple MCP server spawned and drives a set of workers. One MCP server instance (and thus one in-memory registry) per coordinator session.
-- **supervisor** — Paul's informal synonym for **coordinator** (the manager session). Not used anywhere in the code; prefer *coordinator* in code and docs.
+- **supervisor** — informal synonym for **coordinator** (the manager session). Not used anywhere in the code; prefer *coordinator* in code and docs.
 - **worker** — a spawned Claude Code (or Codex) session driven by a coordinator; identified by internal ID, terminal ID, or themed name (see CLAUDE.md "Worker Identification").
 - **marker** — the `<!maniple-tmux:%1!>`-style string sent as a worker's first message so its terminal pane can be correlated with its JSONL transcript (`session_state.py`).
 - **badge** (`coordinator_badge`) — coordinator-facing task label for a worker; display/branch metadata only, never sent to the worker.

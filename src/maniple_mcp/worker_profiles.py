@@ -33,7 +33,7 @@ WEB_READER_PROFILE: dict[str, Any] = {
     "extra_args": [
         "--permission-mode",
         "dontAsk",
-        # --restricted ignores the user's/project's settings files (so Paul's
+        # --restricted ignores the user's/project's settings files (so the user's
         # broad Read(**)/Bash(*) allows don't apply) while the per-worker
         # --settings file still does. --tools is WebFetch,WebSearch ONLY: no
         # file-read tool, so a fetched page can't make the worker read ~/.env
