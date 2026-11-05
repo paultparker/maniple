@@ -427,10 +427,11 @@ WorkerConfig fields:
                               dontAsk mode, --restricted (ignores user/project settings), --tools
                               WebFetch,WebSearch only (no file reads), mcp__* /
                               Bash / Edit / Write / Agent / SendMessage ... denied, claude.ai
-                              connectors off, no worktree, trust_project_mcp=false. Explicit
-                              fields override scalars and extend collections. Combining it with
-                              skip_permissions=true is an error. Use a fixed empty, already
-                              trusted project_path.
+                              connectors off, no worktree, trust_project_mcp=false. The profile
+                              is a floor: setting skip_permissions, trust_project_mcp,
+                              use_worktree, worktree, extra_args, env or plugin_dir is an error,
+                              and worker_settings may only add permissions.deny entries. Use a
+                              fixed empty, already trusted project_path.
   worker_settings: dict     - Deep-merged into the per-worker --settings JSON
                               (~/.claude/claude-team-settings/worker-<id>.json). Dicts merge,
                               lists concatenate AFTER maniple's own entries (hooks are appended,
