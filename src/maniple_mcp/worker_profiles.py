@@ -24,6 +24,7 @@ import shlex
 from typing import Any
 
 from .config import EFFORT_LEVELS
+from .output_file import validate_output_path
 
 PROFILE_WEB_READER = "web-reader"
 
@@ -137,8 +138,10 @@ def validate_worker_launch_fields(config: dict) -> None:
     if of is not None:
         if not isinstance(of, str) or not of:
             raise WorkerConfigError("'output_file' must be a non-empty string")
-        if not of.startswith("/"):
-            raise WorkerConfigError(f"'output_file' must be an absolute path: {of!r}")
+        try:
+            validate_output_path(of)
+        except ValueError as exc:
+            raise WorkerConfigError(str(exc)) from exc
 
 
 # Entries tolerated in a web-reader directory: OS cruft only. Maniple itself

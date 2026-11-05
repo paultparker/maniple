@@ -6,7 +6,9 @@ output_file and the named "web-reader" profile.
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +37,13 @@ from maniple_mcp.worker_profiles import (
     deep_merge_settings,
     expand_profile,
 )
+
+
+@pytest.fixture(autouse=True)
+def output_root(tmp_path, monkeypatch):
+    """Confine output_file writes to tmp_path; the real ~/.maniple is never touched."""
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(tmp_path))
+    return tmp_path
 
 
 @pytest.fixture
@@ -841,3 +850,121 @@ async def test_web_reader_tolerates_ds_store(tmp_path, monkeypatch):
         {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
     )
     assert len(backend.started) == 1
+
+
+# ---------------------------------------------------------------------------
+# output_file path confinement
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def confined(tmp_path, monkeypatch):
+    """A root that does not contain the rest of tmp_path; returns (root, outside)."""
+    root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    return root, outside
+
+
+class TestOutputFileConfinement:
+    def test_absent_path_outside_root_is_refused(self, confined, tmp_path):
+        target = tmp_path / "home" / ".ssh" / "authorized_keys"
+        with pytest.raises(ValueError):
+            write_unique(str(target), "ssh-ed25519 ATTACKER")
+        assert not target.exists()
+        assert not target.parent.exists()  # no directories created either
+
+    def test_inside_root_is_written_privately(self, confined):
+        root, _ = confined
+        target = root / "job" / "r.md"
+        assert write_unique(str(target), "x") == target
+        assert target.read_text() == "x"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_dotdot_escape_is_refused(self, confined):
+        root, outside = confined
+        with pytest.raises(ValueError):
+            write_unique(f"{root}/../outside/x", "x")
+        assert list(outside.iterdir()) == []
+
+    def test_sibling_with_root_as_string_prefix_is_refused(self, confined, tmp_path):
+        root, _ = confined
+        target = tmp_path / f"{root.name}-evil" / "x"
+        with pytest.raises(ValueError):
+            write_unique(str(target), "x")
+        assert not target.parent.exists()
+
+    def test_root_itself_is_refused(self, confined):
+        root, _ = confined
+        root.mkdir()
+        with pytest.raises(ValueError):
+            write_unique(str(root), "x")
+
+    def test_symlinked_dir_escaping_root_is_refused(self, confined):
+        root, outside = confined
+        root.mkdir()
+        (root / "link").symlink_to(outside)
+        with pytest.raises(ValueError):
+            write_unique(str(root / "link" / "new" / "x"), "x")
+        assert list(outside.iterdir()) == []  # nothing created through the link
+
+    def test_symlink_swapped_in_after_the_check_is_not_followed(
+        self, confined, monkeypatch
+    ):
+        """A dir replaced by a symlink between check and open must not be traversed."""
+        root, outside = confined
+        (root / "job").mkdir(parents=True)
+        real_open = os.open
+        swapped = []
+
+        def swap_then_open(path, flags, *args, **kwargs):
+            if not swapped:
+                swapped.append(True)
+                (root / "job").rmdir()
+                (root / "job").symlink_to(outside)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr("maniple_mcp.output_file.os.open", swap_then_open)
+        with pytest.raises(OSError):
+            write_unique(str(root / "job" / "x"), "x")
+        assert list(outside.iterdir()) == []
+
+    def test_default_root_is_under_maniple_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MANIPLE_OUTPUT_DIR")
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".maniple")
+        good = tmp_path / ".maniple" / "output" / "r.md"
+        assert write_unique(str(good), "x") == good
+        with pytest.raises(ValueError):
+            write_unique(str(tmp_path / ".ssh" / "authorized_keys"), "x")
+        assert not (tmp_path / ".ssh").exists()
+
+    def test_relative_root_override_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("MANIPLE_OUTPUT_DIR", "relative")
+        with pytest.raises(ValueError):
+            write_unique(str(tmp_path / "relative" / "x"), "x")
+
+    def test_expand_profile_rejects_outside_root(self, confined):
+        _, outside = confined
+        with pytest.raises(WorkerConfigError):
+            expand_profile({"project_path": "/p", "output_file": str(outside / "x")})
+
+    def test_maybe_write_does_not_write_outside_root(self, confined, tmp_path):
+        _, outside = confined
+        jsonl = _jsonl(tmp_path / "s.jsonl", [_user("task"), _assistant([_text("R")])])
+        s = _session(tmp_path, jsonl, str(outside / "x"))
+        assert maybe_write_output_file(s) is None
+        assert list(outside.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_output_file_outside_root_is_error(confined, tmp_path, monkeypatch):
+    _, outside = confined
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "output_file": str(outside / "x")}]},
+        context=ctx,
+    )
+    assert "MANIPLE_OUTPUT_DIR" in json.dumps(result, default=str)
+    assert backend.started == []
