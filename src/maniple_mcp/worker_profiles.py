@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import copy
 import re
+import shlex
 from typing import Any
+
+from .config import EFFORT_LEVELS
 
 PROFILE_WEB_READER = "web-reader"
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Characters that are inert on an unquoted shell line, as --model's value is.
+_SAFE_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*")
 
 WEB_READER_PROFILE: dict[str, Any] = {
     "skip_permissions": False,
@@ -146,6 +151,11 @@ def check_web_reader_dir(path) -> None:
     from pathlib import Path
 
     p = Path(path)
+    # The backends run an unquoted `cd <path> && claude ...`.
+    if shlex.quote(str(p)) != str(p):
+        raise WorkerConfigError(
+            f"web-reader requires a directory path that needs no shell quoting (got {p!r})"
+        )
     msg = f"web-reader requires an empty dedicated directory (got {p})"
     if not p.is_dir():
         raise WorkerConfigError(msg)
@@ -155,16 +165,88 @@ def check_web_reader_dir(path) -> None:
         raise WorkerConfigError(msg)
 
 
+# Everything else in a web-reader's config (skip_permissions, trust_project_mcp,
+# use_worktree, extra_args, env, plugin_dir, and any field added later) must be
+# empty or false. model, effort and worker_settings get their own checks below.
+_WEB_READER_ALLOWED_FIELDS = {
+    "project_path",
+    "profile",
+    "agent_type",
+    "name",
+    "badge",
+    "issue_id",
+    "prompt",
+    "output_file",
+    "model",
+    "effort",
+    "worker_settings",
+    "worktree",
+}
+
+
+def _reject_web_reader_overrides(config: dict) -> None:
+    """Refuse every explicit field that could weaken the web-reader profile.
+
+    These are allowlists on purpose. Too many CLI flags (``--settings``,
+    ``--add-dir``, ``--agents``, a later ``--tools``), settings keys (``hooks``,
+    ``apiKeyHelper``, ``permissions.allow``) and env vars (``NODE_OPTIONS``,
+    ``CLAUDE_CONFIG_DIR``, ``ANTHROPIC_BASE_URL``) can undo the restrictions for
+    a denylist to stay complete as Claude Code grows new ones. ``model`` and
+    ``effort`` have their own fields, so nothing legitimate needs ``extra_args``.
+    """
+    for field, value in config.items():
+        if value and field not in _WEB_READER_ALLOWED_FIELDS:
+            raise WorkerConfigError(
+                f"profile='web-reader' does not allow {field}: "
+                "it could override the profile's restrictions"
+            )
+    # Not a truthiness check: spawn_workers treats an empty dict as "use a worktree".
+    if config.get("worktree") not in (None, False):
+        raise WorkerConfigError(
+            "profile='web-reader' does not allow worktree: "
+            "it runs in an empty dedicated directory, with no worktree"
+        )
+
+    # model and effort reach the shell line unquoted, so a stray space or
+    # semicolon would add a flag or a command.
+    model = config.get("model")
+    if model and not (isinstance(model, str) and _SAFE_MODEL_RE.fullmatch(model)):
+        raise WorkerConfigError(
+            "profile='web-reader' requires a model name made of letters, digits "
+            "and . _ : / - only"
+        )
+    effort = config.get("effort")
+    if effort and not (isinstance(effort, str) and effort in EFFORT_LEVELS):
+        raise WorkerConfigError(
+            f"profile='web-reader' requires effort to be one of {sorted(EFFORT_LEVELS)}"
+        )
+
+    settings = config.get("worker_settings") or {}
+    permissions = settings.get("permissions", {})
+    if (
+        set(settings) - {"permissions"}
+        or not isinstance(permissions, dict)
+        or set(permissions) - {"deny"}
+        or not isinstance(permissions.get("deny", []), list)
+        or not all(isinstance(rule, str) for rule in permissions.get("deny", []))
+    ):
+        raise WorkerConfigError(
+            "profile='web-reader' only allows worker_settings of the form "
+            '{"permissions": {"deny": [...]}}: anything else could override the '
+            "profile's restrictions"
+        )
+
+
 def expand_profile(config: dict) -> dict:
     """Return ``config`` with its ``profile`` (if any) expanded.
 
-    Explicit fields alongside the profile override scalars and extend
-    collections: ``extra_args`` are appended after the profile's, ``env`` is
-    merged (explicit wins), ``worker_settings`` is deep-merged (lists
-    concatenate). The ``profile`` key is kept so callers can see it.
+    A profile is a floor, not a set of defaults: explicit fields alongside
+    ``web-reader`` may only tighten it, and anything else is rejected rather
+    than dropped (see ``_reject_web_reader_overrides``). The ``profile`` key is
+    kept so callers can see it.
 
-    Raises WorkerConfigError for an unknown profile, for profile=web-reader
-    combined with skip_permissions=True, and for malformed fields.
+    Raises WorkerConfigError for an unknown profile, for a field that would
+    weaken web-reader, and for malformed fields.
     """
     validate_worker_launch_fields(config)
     profile_name = config.get("profile")
@@ -175,19 +257,15 @@ def expand_profile(config: dict) -> dict:
             f"Unknown profile {profile_name!r}. Known profiles: "
             f"{', '.join(sorted(PROFILES))}"
         )
-    if profile_name == PROFILE_WEB_READER and config.get("skip_permissions") is True:
-        raise WorkerConfigError(
-            "profile='web-reader' cannot be combined with skip_permissions=True "
-            "(bypass mode would override the profile's restrictions)"
-        )
+    if profile_name == PROFILE_WEB_READER:
+        _reject_web_reader_overrides(config)
 
     preset = copy.deepcopy(PROFILES[profile_name])
     expanded = dict(config)
     for key in ("skip_permissions", "trust_project_mcp", "use_worktree"):
-        if expanded.get(key) is None:
-            expanded[key] = preset[key]
-    expanded["extra_args"] = preset["extra_args"] + list(config.get("extra_args") or [])
-    expanded["env"] = {**preset["env"], **(config.get("env") or {})}
+        expanded[key] = preset[key]
+    expanded["extra_args"] = preset["extra_args"]
+    expanded["env"] = preset["env"]
     expanded["worker_settings"] = deep_merge_settings(
         preset["worker_settings"], config.get("worker_settings") or {}
     )

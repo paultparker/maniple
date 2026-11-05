@@ -31,6 +31,7 @@ from maniple_mcp.tools import spawn_workers as spawn_workers_module
 from maniple_mcp.worker_profiles import (
     WEB_READER_PROFILE,
     WorkerConfigError,
+    check_web_reader_dir,
     deep_merge_settings,
     expand_profile,
 )
@@ -208,7 +209,6 @@ class TestProfileExpansion:
             {
                 "project_path": "/p",
                 "profile": "web-reader",
-                "extra_args": ["--x"],
                 "worker_settings": {"permissions": {"deny": ["Foo"]}},
             }
         )
@@ -216,23 +216,164 @@ class TestProfileExpansion:
         out["extra_args"].append("zzz")
         assert json.dumps(WEB_READER_PROFILE, sort_keys=True) == before
 
-    def test_explicit_fields_extend_and_override(self):
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--permission-mode", "bypassPermissions"],
+            ["--dangerously-skip-permissions"],
+            ["--tools", "Bash,Read"],
+            ["--allowedTools", "Bash"],
+            ["--settings", "/tmp/evil.json"],
+            ["--setting-sources", "user,project"],
+            ["--mcp-config", "/tmp/evil.json"],
+            ["--add-dir", "/"],
+            ["--plugin-dir", "/tmp/evil"],
+            ["--model", "opus"],  # has its own field; nothing is exempt here
+        ],
+    )
+    def test_extra_args_rejected(self, extra_args):
+        with pytest.raises(WorkerConfigError, match="extra_args"):
+            expand_profile(
+                {"project_path": "/p", "profile": "web-reader", "extra_args": extra_args}
+            )
+
+    @pytest.mark.parametrize(
+        "worker_settings",
+        [
+            {"permissions": {"defaultMode": "bypassPermissions"}},
+            {"permissions": {"blockReadsOutsideWorkingDirectories": False}},
+            {"permissions": {"allow": ["Bash"]}},
+            {"permissions": {"additionalDirectories": ["/"]}},
+            # A non-list would replace the preset's deny list in deep_merge.
+            {"permissions": {"deny": "Nothing"}},
+            {"permissions": {"deny": [1]}},
+            {"permissions": ["deny"]},
+            {"disableClaudeAiConnectors": False},
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "id"}]}]}},
+            {"apiKeyHelper": "/tmp/evil.sh"},
+            {"statusLine": {"type": "command", "command": "id"}},
+            {"env": {"NODE_OPTIONS": "--require=/tmp/evil.js"}},
+            {"mcpServers": {"evil": {"command": "id"}}},
+        ],
+    )
+    def test_weakening_worker_settings_rejected(self, worker_settings):
+        with pytest.raises(WorkerConfigError, match="worker_settings"):
+            expand_profile(
+                {
+                    "project_path": "/p",
+                    "profile": "web-reader",
+                    "worker_settings": worker_settings,
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"},
+            {"NODE_OPTIONS": "--require=/tmp/evil.js"},
+            {"CLAUDE_CONFIG_DIR": "/tmp/evil"},
+            {"ANTHROPIC_BASE_URL": "https://example.invalid"},
+            {"PATH": "/tmp/evil"},
+        ],
+    )
+    def test_env_rejected(self, env):
+        with pytest.raises(WorkerConfigError, match="env"):
+            expand_profile({"project_path": "/p", "profile": "web-reader", "env": env})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("skip_permissions", 1),
+            ("skip_permissions", "true"),
+            ("trust_project_mcp", True),
+            ("trust_project_mcp", "true"),
+            ("use_worktree", True),
+            ("worktree", {"branch": "x"}),
+            ("worktree", {}),  # an empty dict still turns a worktree on
+            ("worktree", True),
+            ("plugin_dir", "/tmp/evil"),
+            ("plugin_dir", ["/tmp/evil"]),
+        ],
+    )
+    def test_weakening_launch_fields_rejected(self, field, value):
+        with pytest.raises(WorkerConfigError, match=field):
+            expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            # Both reach the shell line unquoted, so these would add a flag or a command.
+            ("model", "sonnet --dangerously-skip-permissions"),
+            ("model", "sonnet; id"),
+            ("model", "sonnet\nid"),
+            ("model", "--dangerously-skip-permissions"),
+            ("model", "$(id)"),
+            ("model", ["sonnet"]),
+            ("effort", "low; id"),
+            ("effort", "low --dangerously-skip-permissions"),
+            ("effort", "turbo"),
+        ],
+    )
+    def test_unsafe_model_and_effort_rejected(self, field, value):
+        with pytest.raises(WorkerConfigError, match=field):
+            expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        "model",
+        ["sonnet", "claude-opus-5-5", "us.anthropic.claude-sonnet-5-5:0", "arn:aws:bedrock/x"],
+    )
+    def test_real_model_names_accepted(self, model):
+        out = expand_profile({"project_path": "/p", "profile": "web-reader", "model": model})
+        assert out["model"] == model
+
+    @pytest.mark.parametrize("name", ["a; id", "a b", "$(id)"])
+    def test_directory_needing_shell_quoting_rejected(self, tmp_path, name):
+        # The backends run an unquoted `cd <path> && claude ...`.
+        unsafe = tmp_path / name
+        unsafe.mkdir()
+        with pytest.raises(WorkerConfigError, match="shell"):
+            check_web_reader_dir(unsafe)
+
+    def test_unrecognised_field_rejected(self):
+        # A field added to WorkerConfig later must fail closed until it is reviewed.
+        with pytest.raises(WorkerConfigError, match="some_future_field"):
+            expand_profile(
+                {"project_path": "/p", "profile": "web-reader", "some_future_field": "x"}
+            )
+
+    def test_safe_explicit_fields_still_accepted(self):
         out = expand_profile(
             {
                 "project_path": "/p",
                 "profile": "web-reader",
-                "extra_args": ["--model-ish", "v"],
-                "env": {"A": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "true"},
+                "extra_args": [],
+                "env": {},
                 "worker_settings": {"permissions": {"deny": ["Extra"]}},
-                "use_worktree": True,
+                "skip_permissions": False,
+                "trust_project_mcp": False,
+                "use_worktree": False,
+                "worktree": False,
+                "plugin_dir": [],
+                "model": "sonnet",
+                "effort": "low",
             }
         )
-        assert out["extra_args"][-2:] == ["--model-ish", "v"]
-        assert out["extra_args"][:2] == ["--permission-mode", "dontAsk"]
-        assert out["env"] == {"A": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "true"}
+        assert out["extra_args"] == WEB_READER_PROFILE["extra_args"]
+        assert out["env"] == WEB_READER_PROFILE["env"]
         deny = out["worker_settings"]["permissions"]["deny"]
         assert deny[-1] == "Extra" and "mcp__*" in deny
-        assert out["use_worktree"] is True
+        assert out["model"] == "sonnet" and out["effort"] == "low"
+
+    def test_other_workers_keep_their_overrides(self):
+        config = {
+            "project_path": "/p",
+            "extra_args": ["--permission-mode", "plan"],
+            "worker_settings": {"hooks": {"Stop": []}},
+            "env": {"A": "1"},
+            "plugin_dir": "/plugins/x",
+            "trust_project_mcp": True,
+        }
+        assert expand_profile(dict(config)) == config
 
     def test_skip_permissions_true_conflicts(self):
         with pytest.raises(WorkerConfigError, match="skip_permissions"):
@@ -348,7 +489,6 @@ async def test_spawn_web_reader_profile_flows_to_backend(tmp_path, monkeypatch):
                     "name": "W",
                     "profile": "web-reader",
                     "output_file": str(out_file),
-                    "env": {"FOO": "bar"},
                 }
             ]
         },
@@ -362,7 +502,6 @@ async def test_spawn_web_reader_profile_flows_to_backend(tmp_path, monkeypatch):
     assert started["extra_args"][:2] == ["--permission-mode", "dontAsk"]
     assert "mcp__*" in started["worker_settings"]["permissions"]["deny"]
     assert started["env"]["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
-    assert started["env"]["FOO"] == "bar"
     managed = registry.list_all()[0]
     assert managed.output_file == str(out_file)
 
@@ -383,6 +522,28 @@ async def test_spawn_profile_with_skip_permissions_is_error(tmp_path, monkeypatc
         context=ctx,
     )
     assert "error" in json.dumps(result, default=str).lower()
+    assert backend.started == []
+    assert backend.sessions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"extra_args": ["--permission-mode", "bypassPermissions"]},
+        {"worker_settings": {"permissions": {"defaultMode": "bypassPermissions"}}},
+        {"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}},
+        {"trust_project_mcp": True},
+        {"plugin_dir": "/tmp/evil"},
+    ],
+)
+async def test_spawn_web_reader_override_launches_nothing(tmp_path, monkeypatch, override):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader", **override}]},
+        context=ctx,
+    )
+    assert "web-reader" in json.dumps(result, default=str)
     assert backend.started == []
     assert backend.sessions == []
 

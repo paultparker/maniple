@@ -223,10 +223,12 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 env={"ENABLE_CLAUDEAI_MCP_SERVERS": "false"} and a worker_settings
                 that sets disableClaudeAiConnectors, defaultMode=dontAsk and denies
                 mcp__*, Bash, Edit, Write, Agent, SendMessage and the other
-                write/shell/messaging tools. Explicit fields given alongside the
-                profile override scalars and extend collections (extra_args appended,
-                env merged, worker_settings deep-merged). profile="web-reader" with
-                skip_permissions=True is an error. Claude workers only. Tip: point
+                write/shell/messaging tools. The profile is a floor: the spawn is an
+                error if skip_permissions, trust_project_mcp, use_worktree, worktree,
+                extra_args, env or plugin_dir is set, or if worker_settings holds
+                anything except extra permissions.deny entries. model and effort stay
+                available but must be shell-safe, as must the directory path. Claude
+                workers only. Tip: point
                 project_path at a fixed, empty, already-trusted directory.
             worker_settings: Optional dict deep-merged into the per-worker --settings
                 JSON maniple writes (~/.claude/claude-team-settings/worker-<id>.json).
