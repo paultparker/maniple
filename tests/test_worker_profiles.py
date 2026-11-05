@@ -31,6 +31,7 @@ from maniple_mcp.tools import spawn_workers as spawn_workers_module
 from maniple_mcp.worker_profiles import (
     WEB_READER_PROFILE,
     WorkerConfigError,
+    check_web_reader_dir,
     deep_merge_settings,
     expand_profile,
 )
@@ -297,6 +298,41 @@ class TestProfileExpansion:
     def test_weakening_launch_fields_rejected(self, field, value):
         with pytest.raises(WorkerConfigError, match=field):
             expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            # Both reach the shell line unquoted, so these would add a flag or a command.
+            ("model", "sonnet --dangerously-skip-permissions"),
+            ("model", "sonnet; id"),
+            ("model", "sonnet\nid"),
+            ("model", "--dangerously-skip-permissions"),
+            ("model", "$(id)"),
+            ("model", ["sonnet"]),
+            ("effort", "low; id"),
+            ("effort", "low --dangerously-skip-permissions"),
+            ("effort", "turbo"),
+        ],
+    )
+    def test_unsafe_model_and_effort_rejected(self, field, value):
+        with pytest.raises(WorkerConfigError, match=field):
+            expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        "model",
+        ["sonnet", "claude-opus-5-5", "us.anthropic.claude-sonnet-5-5:0", "arn:aws:bedrock/x"],
+    )
+    def test_real_model_names_accepted(self, model):
+        out = expand_profile({"project_path": "/p", "profile": "web-reader", "model": model})
+        assert out["model"] == model
+
+    @pytest.mark.parametrize("name", ["a; id", "a b", "$(id)"])
+    def test_directory_needing_shell_quoting_rejected(self, tmp_path, name):
+        # The backends run an unquoted `cd <path> && claude ...`.
+        unsafe = tmp_path / name
+        unsafe.mkdir()
+        with pytest.raises(WorkerConfigError, match="shell"):
+            check_web_reader_dir(unsafe)
 
     def test_safe_explicit_fields_still_accepted(self):
         out = expand_profile(

@@ -226,8 +226,9 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 write/shell/messaging tools. The profile is a floor: the spawn is an
                 error if skip_permissions, trust_project_mcp, use_worktree, worktree,
                 extra_args, env or plugin_dir is set, or if worker_settings holds
-                anything except extra permissions.deny entries. Use the model and
-                effort fields to pick a model. Claude workers only. Tip: point
+                anything except extra permissions.deny entries. model and effort stay
+                available but must be shell-safe, as must the directory path. Claude
+                workers only. Tip: point
                 project_path at a fixed, empty, already-trusted directory.
             worker_settings: Optional dict deep-merged into the per-worker --settings
                 JSON maniple writes (~/.claude/claude-team-settings/worker-<id>.json).

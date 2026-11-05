@@ -430,8 +430,9 @@ WorkerConfig fields:
                               connectors off, no worktree, trust_project_mcp=false. The profile
                               is a floor: setting skip_permissions, trust_project_mcp,
                               use_worktree, worktree, extra_args, env or plugin_dir is an error,
-                              and worker_settings may only add permissions.deny entries. Use a
-                              fixed empty, already trusted project_path.
+                              and worker_settings may only add permissions.deny entries. model,
+                              effort and the directory path must be shell-safe. Use a fixed
+                              empty, already trusted project_path.
   worker_settings: dict     - Deep-merged into the per-worker --settings JSON
                               (~/.claude/claude-team-settings/worker-<id>.json). Dicts merge,
                               lists concatenate AFTER maniple's own entries (hooks are appended,

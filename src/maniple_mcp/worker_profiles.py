@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import copy
 import re
+import shlex
 from typing import Any
+
+from .config import EFFORT_LEVELS
 
 PROFILE_WEB_READER = "web-reader"
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Characters that are inert on an unquoted shell line, as --model's value is.
+_SAFE_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*")
 
 WEB_READER_PROFILE: dict[str, Any] = {
     "skip_permissions": False,
@@ -146,6 +151,11 @@ def check_web_reader_dir(path) -> None:
     from pathlib import Path
 
     p = Path(path)
+    # The backends run an unquoted `cd <path> && claude ...`.
+    if shlex.quote(str(p)) != str(p):
+        raise WorkerConfigError(
+            f"web-reader requires a directory path that needs no shell quoting (got {p!r})"
+        )
     msg = f"web-reader requires an empty dedicated directory (got {p})"
     if not p.is_dir():
         raise WorkerConfigError(msg)
@@ -183,6 +193,20 @@ def _reject_web_reader_overrides(config: dict) -> None:
         raise WorkerConfigError(
             "profile='web-reader' does not allow worktree: "
             "it runs in an empty dedicated directory, with no worktree"
+        )
+
+    # model and effort reach the shell line unquoted, so a stray space or
+    # semicolon would add a flag or a command.
+    model = config.get("model")
+    if model and not (isinstance(model, str) and _SAFE_MODEL_RE.fullmatch(model)):
+        raise WorkerConfigError(
+            "profile='web-reader' requires a model name made of letters, digits "
+            "and . _ : / - only"
+        )
+    effort = config.get("effort")
+    if effort and not (isinstance(effort, str) and effort in EFFORT_LEVELS):
+        raise WorkerConfigError(
+            f"profile='web-reader' requires effort to be one of {sorted(EFFORT_LEVELS)}"
         )
 
     settings = config.get("worker_settings") or {}
