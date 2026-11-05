@@ -226,7 +226,8 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 mcp__*, Bash, Edit, Write, Agent, SendMessage and the other
                 write/shell/messaging tools. The profile is a floor: the spawn is an
                 error if skip_permissions, trust_project_mcp, use_worktree, extra_args,
-                env or plugin_dir is true or non-empty, if worktree is given, or if worker_settings holds
+                env or plugin_dir is true or non-empty, if worktree is anything but
+                false, or if worker_settings holds
                 anything except extra permissions.deny entries. model (including
                 defaults.model) and effort stay available but must be shell-safe, as
                 must the directory path. Claude
@@ -386,6 +387,15 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     f"Worker {i}: profile/worker_settings/extra_args/output_file "
                     "are supported for Claude workers only",
                 )
+            if expanded.get("profile") == "web-reader":
+                # The launch falls back to defaults.model, so check the model
+                # that will actually reach the shell line.
+                try:
+                    check_web_reader_model(
+                        expanded.get("model") or getattr(defaults, "model", None)
+                    )
+                except WorkerConfigError as exc:
+                    return error_response(f"Worker {i}: {exc}")
             expanded_workers.append(expanded)  # type: ignore[arg-type]
         workers = expanded_workers
 
@@ -481,11 +491,6 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 if w.get("profile") == "web-reader":
                     try:
                         check_web_reader_dir(repo_path)
-                        # The launch falls back to defaults.model, so check the
-                        # model that will actually reach the shell line.
-                        check_web_reader_model(
-                            w.get("model") or getattr(defaults, "model", None)
-                        )
                     except WorkerConfigError as exc:
                         return error_response(f"Worker {i}: {exc}")
 

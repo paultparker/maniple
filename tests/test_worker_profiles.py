@@ -1017,3 +1017,44 @@ async def test_web_reader_explicit_safe_model_beats_unsafe_default(tmp_path, mon
     )
     assert "requires a model name" not in json.dumps(result, default=str)
     assert backend.started
+
+
+def test_output_root_ancestor_swapped_for_symlink_is_not_followed(tmp_path):
+    from maniple_mcp.output_file import _open_dir_beneath
+
+    outside = tmp_path / "outside"
+    (outside / "output").mkdir(parents=True)
+    (tmp_path / "parent").symlink_to(outside)
+    with pytest.raises(OSError):
+        _open_dir_beneath(tmp_path / "parent" / "output", ())
+
+
+def test_output_root_swapped_after_first_use_refuses_the_write(tmp_path, monkeypatch):
+    from maniple_mcp.output_file import validate_output_path
+
+    root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    target = str(root / "x.md")
+    validate_output_path(target)  # the spawn-time check
+    root.rmdir()
+    root.symlink_to(outside)
+    with pytest.raises((OSError, ValueError)):
+        write_unique(target, "x")
+    assert list(outside.iterdir()) == []
+
+
+def test_output_write_works_when_an_ancestor_is_not_readable(tmp_path, monkeypatch):
+    """Walking down from / must need only search permission on ancestors."""
+    locked = tmp_path / "locked"
+    root = locked / "output"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    locked.chmod(0o311)
+    try:
+        written = write_unique(str(root / "x.md"), "x")
+        assert written.read_text() == "x"
+    finally:
+        locked.chmod(0o755)

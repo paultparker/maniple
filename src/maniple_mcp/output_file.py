@@ -25,6 +25,7 @@ deliberately not allowed either (CLAUDE.md, .claude/settings.json, .git/config).
 from __future__ import annotations
 
 import errno
+import functools
 import logging
 import os
 from pathlib import Path
@@ -40,6 +41,19 @@ HEADER_TEMPLATE = (
 )
 
 OUTPUT_ROOT_ENV = "MANIPLE_OUTPUT_DIR"
+
+# Enough to walk through an ancestor directory, without needing read permission.
+_TRAVERSE_FLAG = getattr(os, "O_PATH", 0) or getattr(os, "O_SEARCH", 0) or os.O_RDONLY
+
+
+@functools.lru_cache(maxsize=None)
+def _resolve_root_once(configured: str) -> Path:
+    """Resolve the root on first use and keep it for the server's lifetime.
+
+    Re-resolving at write time would let a root swapped for a symlink during a
+    worker's run carry the write elsewhere and still pass the confinement check.
+    """
+    return Path(os.path.realpath(configured))
 
 
 def extract_final_message(jsonl_path: Path) -> Optional[str]:
@@ -88,12 +102,13 @@ def output_root() -> Path:
     """Return the real path of the only directory output_file may write under.
 
     ``$MANIPLE_OUTPUT_DIR`` if set (read from the server's own environment, which
-    a spawn_workers caller cannot change), else ``~/.maniple/output``.
+    a spawn_workers caller cannot change), else ``~/.maniple/output``. Resolved
+    once per server process: re-pointing a symlinked root needs a server restart.
     """
     override = os.environ.get(OUTPUT_ROOT_ENV)
     if override and not os.path.isabs(override):
         raise ValueError(f"{OUTPUT_ROOT_ENV} must be an absolute path: {override!r}")
-    return Path(os.path.realpath(override or config.CONFIG_DIR / "output"))
+    return _resolve_root_once(str(override or config.CONFIG_DIR / "output"))
 
 
 def _confine(path_str: str) -> tuple[Path, tuple[str, ...], str]:
@@ -132,23 +147,31 @@ def validate_output_path(path_str: str) -> None:
 def _open_dir_beneath(root: Path, subdirs: tuple[str, ...]) -> int:
     """Return an fd for root/subdirs, creating them and traversing no symlinks.
 
-    Walking by fd means a directory swapped for a symlink after ``_confine``
-    raises OSError instead of redirecting the write outside the root.
+    Walking by fd from ``/`` means a root, an ancestor of the root or a subdir
+    swapped for a symlink after ``_confine`` raises OSError instead of redirecting
+    the write. ``root`` is already a real path, so it legitimately has no symlinks.
     """
     os.makedirs(root, mode=0o700, exist_ok=True)
-    # root is already a real path, so a symlink here was swapped in after _confine.
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+    def step(parent_fd: int, part: str, access: int) -> int:
+        next_fd = os.open(
+            part, access | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+        )
+        os.close(parent_fd)
+        return next_fd
+
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
+        for part in root.parts[1:-1]:
+            fd = step(fd, part, _TRAVERSE_FLAG)
+        for part in root.parts[1:][-1:]:
+            fd = step(fd, part, os.O_RDONLY)
         for part in subdirs:
             try:
                 os.mkdir(part, 0o700, dir_fd=fd)
             except FileExistsError:
                 pass
-            next_fd = os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
-            )
-            os.close(fd)
-            fd = next_fd
+            fd = step(fd, part, os.O_RDONLY)
     except BaseException:
         os.close(fd)
         raise

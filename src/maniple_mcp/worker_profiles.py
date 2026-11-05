@@ -192,7 +192,8 @@ def check_web_reader_model(model) -> None:
     if model and not (isinstance(model, str) and _SAFE_MODEL_RE.fullmatch(model)):
         raise WorkerConfigError(
             "profile='web-reader' requires a model name made of letters, digits "
-            "and . _ : / - only"
+            "and . _ : / - only (this also applies to defaults.model in the "
+            "maniple config; pass a safe model to override it)"
         )
 
 
