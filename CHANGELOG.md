@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - AskUserQuestion `PreToolUse`/`PostToolUse` marker hooks injected into workers, with the pending-question marker cleared when a worker is closed.
 - `trust_project_mcp` parameter on `spawn_workers` (default `True`) to control auto-approval of a project's `.mcp.json` servers.
 
+### Security
+- `output_file` could create a file at any absent path (e.g. `~/.ssh/authorized_keys`), with text steerable by web content. Writes are now confined to `~/.maniple/output` (override with `MANIPLE_OUTPUT_DIR` on the server), checked at spawn and at write time, without traversing symlinks. **Breaking:** an `output_file` elsewhere now fails the spawn.
+
 ### Fixed
 - Workers no longer stall at Claude's "New MCP server found" trust prompt — which the agent-ready detector misreported as a launch failure. Project `.mcp.json` servers are auto-approved by default; pass `trust_project_mcp=False` per worker to preserve the prompt for untrusted checkouts.
 - Resolve an order-dependent circular import between `registry` and `utils.errors`.

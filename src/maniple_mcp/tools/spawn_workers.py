@@ -103,7 +103,7 @@ class WorkerConfig(TypedDict, total=False):
     worker_settings: dict  # Optional: deep-merged into the per-worker --settings JSON (hooks appended, lists concatenated). Claude only.
     extra_args: list[str]  # Optional: extra claude CLI args, each shell-quoted. Claude only.
     env: dict[str, str]  # Optional: env vars exported for this worker's process only.
-    output_file: str  # Optional: absolute path; worker's final message is written here (with an UNTRUSTED header) when it goes idle.
+    output_file: str  # Optional: absolute path under ~/.maniple/output (or $MANIPLE_OUTPUT_DIR); worker's final message is written here (with an UNTRUSTED header) when it goes idle.
 
 
 def register_tools(mcp: FastMCP, ensure_connection) -> None:
@@ -242,7 +242,10 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             env: Optional env vars exported for this worker's process only (values
                 quoted; names must be valid identifiers). Maniple's own variables
                 (MANIPLE_WORKER, coordinator breadcrumbs, tracker dir) win on conflict.
-            output_file: Optional ABSOLUTE path. When the worker first goes idle
+            output_file: Optional ABSOLUTE path inside ~/.maniple/output (or
+                $MANIPLE_OUTPUT_DIR, set on the server); any other path is an error,
+                and so is one reached through a symlink leaving that directory.
+                When the worker first goes idle
                 after its task, maniple writes the worker's final assistant message
                 verbatim to this path, prefixed with the header line
                 "<!-- UNTRUSTED: final message of worker <name>, derived from web
