@@ -165,6 +165,25 @@ def check_web_reader_dir(path) -> None:
         raise WorkerConfigError(msg)
 
 
+# Everything else in a web-reader's config (skip_permissions, trust_project_mcp,
+# use_worktree, extra_args, env, plugin_dir, and any field added later) must be
+# empty or false. model, effort and worker_settings get their own checks below.
+_WEB_READER_ALLOWED_FIELDS = {
+    "project_path",
+    "profile",
+    "agent_type",
+    "name",
+    "badge",
+    "issue_id",
+    "prompt",
+    "output_file",
+    "model",
+    "effort",
+    "worker_settings",
+    "worktree",
+}
+
+
 def _reject_web_reader_overrides(config: dict) -> None:
     """Refuse every explicit field that could weaken the web-reader profile.
 
@@ -175,15 +194,8 @@ def _reject_web_reader_overrides(config: dict) -> None:
     a denylist to stay complete as Claude Code grows new ones. ``model`` and
     ``effort`` have their own fields, so nothing legitimate needs ``extra_args``.
     """
-    for field in (
-        "skip_permissions",
-        "trust_project_mcp",
-        "use_worktree",
-        "extra_args",
-        "env",
-        "plugin_dir",
-    ):
-        if config.get(field):
+    for field, value in config.items():
+        if value and field not in _WEB_READER_ALLOWED_FIELDS:
             raise WorkerConfigError(
                 f"profile='web-reader' does not allow {field}: "
                 "it could override the profile's restrictions"

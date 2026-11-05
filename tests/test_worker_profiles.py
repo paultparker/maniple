@@ -334,6 +334,13 @@ class TestProfileExpansion:
         with pytest.raises(WorkerConfigError, match="shell"):
             check_web_reader_dir(unsafe)
 
+    def test_unrecognised_field_rejected(self):
+        # A field added to WorkerConfig later must fail closed until it is reviewed.
+        with pytest.raises(WorkerConfigError, match="some_future_field"):
+            expand_profile(
+                {"project_path": "/p", "profile": "web-reader", "some_future_field": "x"}
+            )
+
     def test_safe_explicit_fields_still_accepted(self):
         out = expand_profile(
             {
