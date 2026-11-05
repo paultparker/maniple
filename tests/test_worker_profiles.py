@@ -968,3 +968,52 @@ async def test_spawn_output_file_outside_root_is_error(confined, tmp_path, monke
     )
     assert "MANIPLE_OUTPUT_DIR" in json.dumps(result, default=str)
     assert backend.started == []
+
+
+# ---------------------------------------------------------------------------
+# Review fixes on the combined branch
+# ---------------------------------------------------------------------------
+
+
+def test_output_root_swapped_for_symlink_is_not_followed(tmp_path):
+    from maniple_mcp.output_file import _open_dir_beneath
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    swapped_root = tmp_path / "root"
+    swapped_root.symlink_to(outside)
+    with pytest.raises(OSError):
+        _open_dir_beneath(swapped_root, ())
+
+
+def test_lone_surrogate_in_worker_text_still_writes_the_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(tmp_path))
+    written = write_unique(str(tmp_path / "r.md"), "HEADER\nbad \udc80 char")
+    assert written.read_text(encoding="utf-8") == "HEADER\nbad ? char"
+
+
+@pytest.mark.asyncio
+async def test_web_reader_rejects_unsafe_default_model(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    config = default_config()
+    config.defaults = DefaultsConfig(use_worktree=True, layout="new", model="sonnet; touch pwned")
+    monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
+    )
+    assert "requires a model name" in json.dumps(result, default=str)
+    assert backend.started == [] and backend.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_web_reader_explicit_safe_model_beats_unsafe_default(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    config = default_config()
+    config.defaults = DefaultsConfig(use_worktree=True, layout="new", model="sonnet; touch pwned")
+    monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader", "model": "opus"}]},
+        context=ctx,
+    )
+    assert "requires a model name" not in json.dumps(result, default=str)
+    assert backend.started

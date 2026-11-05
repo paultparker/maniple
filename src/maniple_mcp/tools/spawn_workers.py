@@ -31,6 +31,7 @@ from ..worker_manifest import write_worker_manifest
 from ..worker_profiles import (
     WorkerConfigError,
     check_web_reader_dir,
+    check_web_reader_model,
     expand_profile,
 )
 from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
@@ -224,10 +225,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 that sets disableClaudeAiConnectors, defaultMode=dontAsk and denies
                 mcp__*, Bash, Edit, Write, Agent, SendMessage and the other
                 write/shell/messaging tools. The profile is a floor: the spawn is an
-                error if skip_permissions, trust_project_mcp, use_worktree, worktree,
-                extra_args, env or plugin_dir is set, or if worker_settings holds
-                anything except extra permissions.deny entries. model and effort stay
-                available but must be shell-safe, as must the directory path. Claude
+                error if skip_permissions, trust_project_mcp, use_worktree, extra_args,
+                env or plugin_dir is true or non-empty, if worktree is given, or if worker_settings holds
+                anything except extra permissions.deny entries. model (including
+                defaults.model) and effort stay available but must be shell-safe, as
+                must the directory path. Claude
                 workers only. Tip: point
                 project_path at a fixed, empty, already-trusted directory.
             worker_settings: Optional dict deep-merged into the per-worker --settings
@@ -246,7 +248,8 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 (MANIPLE_WORKER, coordinator breadcrumbs, tracker dir) win on conflict.
             output_file: Optional ABSOLUTE path inside ~/.maniple/output (or
                 $MANIPLE_OUTPUT_DIR, set on the server); any other path is an error,
-                and so is one reached through a symlink leaving that directory.
+                and so is one whose directory resolves outside it. A symlink at the
+                final path is never followed; the write goes to <path>.1 instead.
                 When the worker first goes idle
                 after its task, maniple writes the worker's final assistant message
                 verbatim to this path, prefixed with the header line
@@ -478,6 +481,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 if w.get("profile") == "web-reader":
                     try:
                         check_web_reader_dir(repo_path)
+                        # The launch falls back to defaults.model, so check the
+                        # model that will actually reach the shell line.
+                        check_web_reader_model(
+                            w.get("model") or getattr(defaults, "model", None)
+                        )
                     except WorkerConfigError as exc:
                         return error_response(f"Worker {i}: {exc}")
 

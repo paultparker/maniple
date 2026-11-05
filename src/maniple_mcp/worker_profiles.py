@@ -187,6 +187,15 @@ _WEB_READER_ALLOWED_FIELDS = {
 }
 
 
+def check_web_reader_model(model) -> None:
+    """Require a model that is empty or inert on an unquoted shell line."""
+    if model and not (isinstance(model, str) and _SAFE_MODEL_RE.fullmatch(model)):
+        raise WorkerConfigError(
+            "profile='web-reader' requires a model name made of letters, digits "
+            "and . _ : / - only"
+        )
+
+
 def _reject_web_reader_overrides(config: dict) -> None:
     """Refuse every explicit field that could weaken the web-reader profile.
 
@@ -212,12 +221,7 @@ def _reject_web_reader_overrides(config: dict) -> None:
 
     # model and effort reach the shell line unquoted, so a stray space or
     # semicolon would add a flag or a command.
-    model = config.get("model")
-    if model and not (isinstance(model, str) and _SAFE_MODEL_RE.fullmatch(model)):
-        raise WorkerConfigError(
-            "profile='web-reader' requires a model name made of letters, digits "
-            "and . _ : / - only"
-        )
+    check_web_reader_model(config.get("model"))
     effort = config.get("effort")
     if effort and not (isinstance(effort, str) and effort in EFFORT_LEVELS):
         raise WorkerConfigError(

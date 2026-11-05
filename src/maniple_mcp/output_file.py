@@ -121,7 +121,11 @@ def _confine(path_str: str) -> tuple[Path, tuple[str, ...], str]:
 
 
 def validate_output_path(path_str: str) -> None:
-    """Raise ValueError unless path_str is a writable location under the output root."""
+    """Raise ValueError unless path_str is inside the output root.
+
+    This does not prove the write will succeed: a path component that is a
+    regular file, or an over-long name, only fails at write time.
+    """
     _confine(path_str)
 
 
@@ -132,7 +136,8 @@ def _open_dir_beneath(root: Path, subdirs: tuple[str, ...]) -> int:
     raises OSError instead of redirecting the write outside the root.
     """
     os.makedirs(root, mode=0o700, exist_ok=True)
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    # root is already a real path, so a symlink here was swapped in after _confine.
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in subdirs:
             try:
@@ -176,7 +181,8 @@ def write_unique(path_str: str, text: str) -> Path:
                 if exc.errno == errno.ELOOP:
                     continue
                 raise
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # errors="replace": a lone surrogate must not leave an empty, headerless file.
+            with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as fh:
                 fh.write(text)
             return base.with_name(candidate)
     finally:
