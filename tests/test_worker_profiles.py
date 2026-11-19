@@ -6,7 +6,9 @@ output_file and the named "web-reader" profile.
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,9 +33,17 @@ from maniple_mcp.tools import spawn_workers as spawn_workers_module
 from maniple_mcp.worker_profiles import (
     WEB_READER_PROFILE,
     WorkerConfigError,
+    check_web_reader_dir,
     deep_merge_settings,
     expand_profile,
 )
+
+
+@pytest.fixture(autouse=True)
+def output_root(tmp_path, monkeypatch):
+    """Confine output_file writes to tmp_path; the real ~/.maniple is never touched."""
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(tmp_path))
+    return tmp_path
 
 
 @pytest.fixture
@@ -208,7 +218,6 @@ class TestProfileExpansion:
             {
                 "project_path": "/p",
                 "profile": "web-reader",
-                "extra_args": ["--x"],
                 "worker_settings": {"permissions": {"deny": ["Foo"]}},
             }
         )
@@ -216,23 +225,164 @@ class TestProfileExpansion:
         out["extra_args"].append("zzz")
         assert json.dumps(WEB_READER_PROFILE, sort_keys=True) == before
 
-    def test_explicit_fields_extend_and_override(self):
+    @pytest.mark.parametrize(
+        "extra_args",
+        [
+            ["--permission-mode", "bypassPermissions"],
+            ["--dangerously-skip-permissions"],
+            ["--tools", "Bash,Read"],
+            ["--allowedTools", "Bash"],
+            ["--settings", "/tmp/evil.json"],
+            ["--setting-sources", "user,project"],
+            ["--mcp-config", "/tmp/evil.json"],
+            ["--add-dir", "/"],
+            ["--plugin-dir", "/tmp/evil"],
+            ["--model", "opus"],  # has its own field; nothing is exempt here
+        ],
+    )
+    def test_extra_args_rejected(self, extra_args):
+        with pytest.raises(WorkerConfigError, match="extra_args"):
+            expand_profile(
+                {"project_path": "/p", "profile": "web-reader", "extra_args": extra_args}
+            )
+
+    @pytest.mark.parametrize(
+        "worker_settings",
+        [
+            {"permissions": {"defaultMode": "bypassPermissions"}},
+            {"permissions": {"blockReadsOutsideWorkingDirectories": False}},
+            {"permissions": {"allow": ["Bash"]}},
+            {"permissions": {"additionalDirectories": ["/"]}},
+            # A non-list would replace the preset's deny list in deep_merge.
+            {"permissions": {"deny": "Nothing"}},
+            {"permissions": {"deny": [1]}},
+            {"permissions": ["deny"]},
+            {"disableClaudeAiConnectors": False},
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "id"}]}]}},
+            {"apiKeyHelper": "/tmp/evil.sh"},
+            {"statusLine": {"type": "command", "command": "id"}},
+            {"env": {"NODE_OPTIONS": "--require=/tmp/evil.js"}},
+            {"mcpServers": {"evil": {"command": "id"}}},
+        ],
+    )
+    def test_weakening_worker_settings_rejected(self, worker_settings):
+        with pytest.raises(WorkerConfigError, match="worker_settings"):
+            expand_profile(
+                {
+                    "project_path": "/p",
+                    "profile": "web-reader",
+                    "worker_settings": worker_settings,
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"},
+            {"NODE_OPTIONS": "--require=/tmp/evil.js"},
+            {"CLAUDE_CONFIG_DIR": "/tmp/evil"},
+            {"ANTHROPIC_BASE_URL": "https://example.invalid"},
+            {"PATH": "/tmp/evil"},
+        ],
+    )
+    def test_env_rejected(self, env):
+        with pytest.raises(WorkerConfigError, match="env"):
+            expand_profile({"project_path": "/p", "profile": "web-reader", "env": env})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("skip_permissions", 1),
+            ("skip_permissions", "true"),
+            ("trust_project_mcp", True),
+            ("trust_project_mcp", "true"),
+            ("use_worktree", True),
+            ("worktree", {"branch": "x"}),
+            ("worktree", {}),  # an empty dict still turns a worktree on
+            ("worktree", True),
+            ("plugin_dir", "/tmp/evil"),
+            ("plugin_dir", ["/tmp/evil"]),
+        ],
+    )
+    def test_weakening_launch_fields_rejected(self, field, value):
+        with pytest.raises(WorkerConfigError, match=field):
+            expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            # Both reach the shell line unquoted, so these would add a flag or a command.
+            ("model", "sonnet --dangerously-skip-permissions"),
+            ("model", "sonnet; id"),
+            ("model", "sonnet\nid"),
+            ("model", "--dangerously-skip-permissions"),
+            ("model", "$(id)"),
+            ("model", ["sonnet"]),
+            ("effort", "low; id"),
+            ("effort", "low --dangerously-skip-permissions"),
+            ("effort", "turbo"),
+        ],
+    )
+    def test_unsafe_model_and_effort_rejected(self, field, value):
+        with pytest.raises(WorkerConfigError, match=field):
+            expand_profile({"project_path": "/p", "profile": "web-reader", field: value})
+
+    @pytest.mark.parametrize(
+        "model",
+        ["sonnet", "claude-opus-5-5", "us.anthropic.claude-sonnet-5-5:0", "arn:aws:bedrock/x"],
+    )
+    def test_real_model_names_accepted(self, model):
+        out = expand_profile({"project_path": "/p", "profile": "web-reader", "model": model})
+        assert out["model"] == model
+
+    @pytest.mark.parametrize("name", ["a; id", "a b", "$(id)"])
+    def test_directory_needing_shell_quoting_rejected(self, tmp_path, name):
+        # The backends run an unquoted `cd <path> && claude ...`.
+        unsafe = tmp_path / name
+        unsafe.mkdir()
+        with pytest.raises(WorkerConfigError, match="shell"):
+            check_web_reader_dir(unsafe)
+
+    def test_unrecognised_field_rejected(self):
+        # A field added to WorkerConfig later must fail closed until it is reviewed.
+        with pytest.raises(WorkerConfigError, match="some_future_field"):
+            expand_profile(
+                {"project_path": "/p", "profile": "web-reader", "some_future_field": "x"}
+            )
+
+    def test_safe_explicit_fields_still_accepted(self):
         out = expand_profile(
             {
                 "project_path": "/p",
                 "profile": "web-reader",
-                "extra_args": ["--model-ish", "v"],
-                "env": {"A": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "true"},
+                "extra_args": [],
+                "env": {},
                 "worker_settings": {"permissions": {"deny": ["Extra"]}},
-                "use_worktree": True,
+                "skip_permissions": False,
+                "trust_project_mcp": False,
+                "use_worktree": False,
+                "worktree": False,
+                "plugin_dir": [],
+                "model": "sonnet",
+                "effort": "low",
             }
         )
-        assert out["extra_args"][-2:] == ["--model-ish", "v"]
-        assert out["extra_args"][:2] == ["--permission-mode", "dontAsk"]
-        assert out["env"] == {"A": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "true"}
+        assert out["extra_args"] == WEB_READER_PROFILE["extra_args"]
+        assert out["env"] == WEB_READER_PROFILE["env"]
         deny = out["worker_settings"]["permissions"]["deny"]
         assert deny[-1] == "Extra" and "mcp__*" in deny
-        assert out["use_worktree"] is True
+        assert out["model"] == "sonnet" and out["effort"] == "low"
+
+    def test_other_workers_keep_their_overrides(self):
+        config = {
+            "project_path": "/p",
+            "extra_args": ["--permission-mode", "plan"],
+            "worker_settings": {"hooks": {"Stop": []}},
+            "env": {"A": "1"},
+            "plugin_dir": "/plugins/x",
+            "trust_project_mcp": True,
+        }
+        assert expand_profile(dict(config)) == config
 
     def test_skip_permissions_true_conflicts(self):
         with pytest.raises(WorkerConfigError, match="skip_permissions"):
@@ -348,7 +498,6 @@ async def test_spawn_web_reader_profile_flows_to_backend(tmp_path, monkeypatch):
                     "name": "W",
                     "profile": "web-reader",
                     "output_file": str(out_file),
-                    "env": {"FOO": "bar"},
                 }
             ]
         },
@@ -362,7 +511,6 @@ async def test_spawn_web_reader_profile_flows_to_backend(tmp_path, monkeypatch):
     assert started["extra_args"][:2] == ["--permission-mode", "dontAsk"]
     assert "mcp__*" in started["worker_settings"]["permissions"]["deny"]
     assert started["env"]["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
-    assert started["env"]["FOO"] == "bar"
     managed = registry.list_all()[0]
     assert managed.output_file == str(out_file)
 
@@ -383,6 +531,28 @@ async def test_spawn_profile_with_skip_permissions_is_error(tmp_path, monkeypatc
         context=ctx,
     )
     assert "error" in json.dumps(result, default=str).lower()
+    assert backend.started == []
+    assert backend.sessions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"extra_args": ["--permission-mode", "bypassPermissions"]},
+        {"worker_settings": {"permissions": {"defaultMode": "bypassPermissions"}}},
+        {"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}},
+        {"trust_project_mcp": True},
+        {"plugin_dir": "/tmp/evil"},
+    ],
+)
+async def test_spawn_web_reader_override_launches_nothing(tmp_path, monkeypatch, override):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader", **override}]},
+        context=ctx,
+    )
+    assert "web-reader" in json.dumps(result, default=str)
     assert backend.started == []
     assert backend.sessions == []
 
@@ -680,3 +850,211 @@ async def test_web_reader_tolerates_ds_store(tmp_path, monkeypatch):
         {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
     )
     assert len(backend.started) == 1
+
+
+# ---------------------------------------------------------------------------
+# output_file path confinement
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def confined(tmp_path, monkeypatch):
+    """A root that does not contain the rest of tmp_path; returns (root, outside)."""
+    root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    return root, outside
+
+
+class TestOutputFileConfinement:
+    def test_absent_path_outside_root_is_refused(self, confined, tmp_path):
+        target = tmp_path / "home" / ".ssh" / "authorized_keys"
+        with pytest.raises(ValueError):
+            write_unique(str(target), "ssh-ed25519 ATTACKER")
+        assert not target.exists()
+        assert not target.parent.exists()  # no directories created either
+
+    def test_inside_root_is_written_privately(self, confined):
+        root, _ = confined
+        target = root / "job" / "r.md"
+        assert write_unique(str(target), "x") == target
+        assert target.read_text() == "x"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_dotdot_escape_is_refused(self, confined):
+        root, outside = confined
+        with pytest.raises(ValueError):
+            write_unique(f"{root}/../outside/x", "x")
+        assert list(outside.iterdir()) == []
+
+    def test_sibling_with_root_as_string_prefix_is_refused(self, confined, tmp_path):
+        root, _ = confined
+        target = tmp_path / f"{root.name}-evil" / "x"
+        with pytest.raises(ValueError):
+            write_unique(str(target), "x")
+        assert not target.parent.exists()
+
+    def test_root_itself_is_refused(self, confined):
+        root, _ = confined
+        root.mkdir()
+        with pytest.raises(ValueError):
+            write_unique(str(root), "x")
+
+    def test_symlinked_dir_escaping_root_is_refused(self, confined):
+        root, outside = confined
+        root.mkdir()
+        (root / "link").symlink_to(outside)
+        with pytest.raises(ValueError):
+            write_unique(str(root / "link" / "new" / "x"), "x")
+        assert list(outside.iterdir()) == []  # nothing created through the link
+
+    def test_symlink_swapped_in_after_the_check_is_not_followed(
+        self, confined, monkeypatch
+    ):
+        """A dir replaced by a symlink between check and open must not be traversed."""
+        root, outside = confined
+        (root / "job").mkdir(parents=True)
+        real_open = os.open
+        swapped = []
+
+        def swap_then_open(path, flags, *args, **kwargs):
+            if not swapped:
+                swapped.append(True)
+                (root / "job").rmdir()
+                (root / "job").symlink_to(outside)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr("maniple_mcp.output_file.os.open", swap_then_open)
+        with pytest.raises(OSError):
+            write_unique(str(root / "job" / "x"), "x")
+        assert list(outside.iterdir()) == []
+
+    def test_default_root_is_under_maniple_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MANIPLE_OUTPUT_DIR")
+        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / ".maniple")
+        good = tmp_path / ".maniple" / "output" / "r.md"
+        assert write_unique(str(good), "x") == good
+        with pytest.raises(ValueError):
+            write_unique(str(tmp_path / ".ssh" / "authorized_keys"), "x")
+        assert not (tmp_path / ".ssh").exists()
+
+    def test_relative_root_override_is_refused(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("MANIPLE_OUTPUT_DIR", "relative")
+        with pytest.raises(ValueError):
+            write_unique(str(tmp_path / "relative" / "x"), "x")
+
+    def test_expand_profile_rejects_outside_root(self, confined):
+        _, outside = confined
+        with pytest.raises(WorkerConfigError):
+            expand_profile({"project_path": "/p", "output_file": str(outside / "x")})
+
+    def test_maybe_write_does_not_write_outside_root(self, confined, tmp_path):
+        _, outside = confined
+        jsonl = _jsonl(tmp_path / "s.jsonl", [_user("task"), _assistant([_text("R")])])
+        s = _session(tmp_path, jsonl, str(outside / "x"))
+        assert maybe_write_output_file(s) is None
+        assert list(outside.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_output_file_outside_root_is_error(confined, tmp_path, monkeypatch):
+    _, outside = confined
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "output_file": str(outside / "x")}]},
+        context=ctx,
+    )
+    assert "MANIPLE_OUTPUT_DIR" in json.dumps(result, default=str)
+    assert backend.started == []
+
+
+# ---------------------------------------------------------------------------
+# Review fixes on the combined branch
+# ---------------------------------------------------------------------------
+
+
+def test_output_root_swapped_for_symlink_is_not_followed(tmp_path):
+    from maniple_mcp.output_file import _open_dir_beneath
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    swapped_root = tmp_path / "root"
+    swapped_root.symlink_to(outside)
+    with pytest.raises(OSError):
+        _open_dir_beneath(swapped_root, ())
+
+
+def test_lone_surrogate_in_worker_text_still_writes_the_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(tmp_path))
+    written = write_unique(str(tmp_path / "r.md"), "HEADER\nbad \udc80 char")
+    assert written.read_text(encoding="utf-8") == "HEADER\nbad ? char"
+
+
+@pytest.mark.asyncio
+async def test_web_reader_rejects_unsafe_default_model(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    config = default_config()
+    config.defaults = DefaultsConfig(use_worktree=True, layout="new", model="sonnet; touch pwned")
+    monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader"}]}, context=ctx
+    )
+    assert "requires a model name" in json.dumps(result, default=str)
+    assert backend.started == [] and backend.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_web_reader_explicit_safe_model_beats_unsafe_default(tmp_path, monkeypatch):
+    tool, ctx, repo, backend, _ = _tool(monkeypatch, tmp_path)
+    config = default_config()
+    config.defaults = DefaultsConfig(use_worktree=True, layout="new", model="sonnet; touch pwned")
+    monkeypatch.setattr(spawn_workers_module, "load_config", lambda: config)
+    result = await tool.run(
+        {"workers": [{"project_path": str(repo), "profile": "web-reader", "model": "opus"}]},
+        context=ctx,
+    )
+    assert "requires a model name" not in json.dumps(result, default=str)
+    assert backend.started
+
+
+def test_output_root_ancestor_swapped_for_symlink_is_not_followed(tmp_path):
+    from maniple_mcp.output_file import _open_dir_beneath
+
+    outside = tmp_path / "outside"
+    (outside / "output").mkdir(parents=True)
+    (tmp_path / "parent").symlink_to(outside)
+    with pytest.raises(OSError):
+        _open_dir_beneath(tmp_path / "parent" / "output", ())
+
+
+def test_output_root_swapped_after_first_use_refuses_the_write(tmp_path, monkeypatch):
+    from maniple_mcp.output_file import validate_output_path
+
+    root = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    target = str(root / "x.md")
+    validate_output_path(target)  # the spawn-time check
+    root.rmdir()
+    root.symlink_to(outside)
+    with pytest.raises((OSError, ValueError)):
+        write_unique(target, "x")
+    assert list(outside.iterdir()) == []
+
+
+def test_output_write_works_when_an_ancestor_is_not_readable(tmp_path, monkeypatch):
+    """Walking down from / must need only search permission on ancestors."""
+    locked = tmp_path / "locked"
+    root = locked / "output"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("MANIPLE_OUTPUT_DIR", str(root))
+    locked.chmod(0o311)
+    try:
+        written = write_unique(str(root / "x.md"), "x")
+        assert written.read_text() == "x"
+    finally:
+        locked.chmod(0o755)

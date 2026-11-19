@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - AskUserQuestion `PreToolUse`/`PostToolUse` marker hooks injected into workers, with the pending-question marker cleared when a worker is closed.
 - `trust_project_mcp` parameter on `spawn_workers` (default `True`) to control auto-approval of a project's `.mcp.json` servers.
 
+### Security
+- `output_file` could create a file at any absent path (e.g. `~/.ssh/authorized_keys`), with text steerable by web content. Writes are now confined to `~/.maniple/output` (override with `MANIPLE_OUTPUT_DIR` on the server), checked at spawn and at write time. The root is resolved once per server process and the write walks down from `/` without following symlinks, so a root, ancestor or subdirectory swapped for a symlink later is refused, and a symlink at the final path is not followed. **Breaking:** an `output_file` elsewhere now fails the spawn.
+- Fields passed alongside `profile: "web-reader"` could undo its restrictions, for example `extra_args: ["--permission-mode", "bypassPermissions"]` or `hooks` in `worker_settings`. The spawn now fails if `skip_permissions`, `trust_project_mcp`, `use_worktree`, `extra_args`, `env` or `plugin_dir` is true or non-empty, if `worktree` is anything but false, or if `worker_settings` holds anything except `permissions.deny` entries. `model` (including `defaults.model`), `effort` and the directory path must also be shell-safe, because they reach the launch command unquoted. **Breaking:** these fields used to override or extend the profile.
+
 ### Fixed
 - Workers no longer stall at Claude's "New MCP server found" trust prompt — which the agent-ready detector misreported as a launch failure. Project `.mcp.json` servers are auto-approved by default; pass `trust_project_mcp=False` per worker to preserve the prompt for untrusted checkouts.
 - Resolve an order-dependent circular import between `registry` and `utils.errors`.

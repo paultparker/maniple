@@ -31,6 +31,7 @@ from ..worker_manifest import write_worker_manifest
 from ..worker_profiles import (
     WorkerConfigError,
     check_web_reader_dir,
+    check_web_reader_model,
     expand_profile,
 )
 from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
@@ -103,7 +104,7 @@ class WorkerConfig(TypedDict, total=False):
     worker_settings: dict  # Optional: deep-merged into the per-worker --settings JSON (hooks appended, lists concatenated). Claude only.
     extra_args: list[str]  # Optional: extra claude CLI args, each shell-quoted. Claude only.
     env: dict[str, str]  # Optional: env vars exported for this worker's process only.
-    output_file: str  # Optional: absolute path; worker's final message is written here (with an UNTRUSTED header) when it goes idle.
+    output_file: str  # Optional: absolute path under ~/.maniple/output (or $MANIPLE_OUTPUT_DIR); worker's final message is written here (with an UNTRUSTED header) when it goes idle.
 
 
 def register_tools(mcp: FastMCP, ensure_connection) -> None:
@@ -223,10 +224,14 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 env={"ENABLE_CLAUDEAI_MCP_SERVERS": "false"} and a worker_settings
                 that sets disableClaudeAiConnectors, defaultMode=dontAsk and denies
                 mcp__*, Bash, Edit, Write, Agent, SendMessage and the other
-                write/shell/messaging tools. Explicit fields given alongside the
-                profile override scalars and extend collections (extra_args appended,
-                env merged, worker_settings deep-merged). profile="web-reader" with
-                skip_permissions=True is an error. Claude workers only. Tip: point
+                write/shell/messaging tools. The profile is a floor: the spawn is an
+                error if skip_permissions, trust_project_mcp, use_worktree, extra_args,
+                env or plugin_dir is true or non-empty, if worktree is anything but
+                false, or if worker_settings holds
+                anything except extra permissions.deny entries. model (including
+                defaults.model) and effort stay available but must be shell-safe, as
+                must the directory path. Claude
+                workers only. Tip: point
                 project_path at a fixed, empty, already-trusted directory.
             worker_settings: Optional dict deep-merged into the per-worker --settings
                 JSON maniple writes (~/.claude/claude-team-settings/worker-<id>.json).
@@ -242,7 +247,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             env: Optional env vars exported for this worker's process only (values
                 quoted; names must be valid identifiers). Maniple's own variables
                 (MANIPLE_WORKER, coordinator breadcrumbs, tracker dir) win on conflict.
-            output_file: Optional ABSOLUTE path. When the worker first goes idle
+            output_file: Optional ABSOLUTE path inside ~/.maniple/output (or
+                $MANIPLE_OUTPUT_DIR, set on the server); any other path is an error,
+                and so is one whose directory resolves outside it. A symlink at the
+                final path is never followed; the write goes to <path>.1 instead.
+                When the worker first goes idle
                 after its task, maniple writes the worker's final assistant message
                 verbatim to this path, prefixed with the header line
                 "<!-- UNTRUSTED: final message of worker <name>, derived from web
@@ -378,6 +387,15 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                     f"Worker {i}: profile/worker_settings/extra_args/output_file "
                     "are supported for Claude workers only",
                 )
+            if expanded.get("profile") == "web-reader":
+                # The launch falls back to defaults.model, so check the model
+                # that will actually reach the shell line.
+                try:
+                    check_web_reader_model(
+                        expanded.get("model") or getattr(defaults, "model", None)
+                    )
+                except WorkerConfigError as exc:
+                    return error_response(f"Worker {i}: {exc}")
             expanded_workers.append(expanded)  # type: ignore[arg-type]
         workers = expanded_workers
 
