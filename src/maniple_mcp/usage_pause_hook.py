@@ -73,6 +73,7 @@ ALLOWLISTED_TOOLS = (
     "CronCreate",
     "CronList",
     "CronDelete",
+    "mcp__paseo__speak",
 )
 
 # Write-capable tools checked by the anti-loophole guard, and the tool_input
@@ -130,6 +131,9 @@ ALLOWLISTED_TOOLS = {
     "CronCreate",
     "CronList",
     "CronDelete",
+    # Paseo voice: a paused voice coordinator must still be able to tell Paul
+    # "I'm paused until HH:MM" (the gate otherwise silences speak, 2026-11-16).
+    "mcp__paseo__speak",
 }
 
 ANTI_LOOPHOLE_PATH_FIELDS = {
@@ -307,7 +311,9 @@ def main(argv):
         "Pause all work now: use Write to save a brief handoff file (current "
         "state, what's done, next steps). Scheduling tools (ScheduleWakeup, "
         "CronCreate/CronList/CronDelete) remain available, so you may "
-        "schedule a continuation for after the reset. Then END YOUR TURN "
+        "schedule a continuation for after the reset. If you are the Paseo "
+        "voice coordinator, mcp__paseo__speak also remains available: say "
+        "once that you are paused until the reset time. Then END YOUR TURN "
         "and await the manager."
     )
     print(json.dumps({

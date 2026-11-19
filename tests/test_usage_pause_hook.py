@@ -110,6 +110,14 @@ class TestAllowlist:
     def test_non_allowlisted_tool_name_not_confused(self):
         assert "Bash" not in ALLOWLISTED_TOOLS
 
+    def test_paseo_speak_allowed_at_any_usage(self, hook_script, tmp_path):
+        """A paused Paseo voice coordinator must still be able to say it is paused."""
+        assert "mcp__paseo__speak" in ALLOWLISTED_TOOLS
+        state_file = _write_state_file(tmp_path, _rate_limits_payload(100.0))
+        result = _run_hook(hook_script, "mcp__paseo__speak", state_file=state_file)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
     @pytest.mark.parametrize(
         "tool_name", ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"]
     )
