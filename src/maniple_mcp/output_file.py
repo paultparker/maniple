@@ -28,6 +28,7 @@ import errno
 import functools
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -43,7 +44,15 @@ HEADER_TEMPLATE = (
 OUTPUT_ROOT_ENV = "MANIPLE_OUTPUT_DIR"
 
 # Enough to walk through an ancestor directory, without needing read permission.
-_TRAVERSE_FLAG = getattr(os, "O_PATH", 0) or getattr(os, "O_SEARCH", 0) or os.O_RDONLY
+# Python on macOS does not expose O_SEARCH, but the kernel defines it as
+# O_EXEC | O_DIRECTORY (sys/fcntl.h).
+_DARWIN_O_SEARCH = 0x40100000 if sys.platform == "darwin" else 0
+_TRAVERSE_FLAG = (
+    getattr(os, "O_PATH", 0)
+    or getattr(os, "O_SEARCH", 0)
+    or _DARWIN_O_SEARCH
+    or os.O_RDONLY
+)
 
 
 @functools.lru_cache(maxsize=None)
